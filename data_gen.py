@@ -1,4 +1,5 @@
 import numpy as np
+from ir_match_matrix import get_one2many_mm, get_one2one_mm
 
 
 def fft_ind_gen(n):
@@ -26,7 +27,7 @@ def gaussian_random_field(pk=lambda k: k ** -3.0, size1=100, size2=100, anisotro
     return np.fft.ifft2(noise * amplitude)
 
 
-def next_batch(bs, h, w, anisotropy=True):
+def next_batch_gaussian(bs, h, w, anisotropy=True):
     x = []
     for i in range(bs):
         o = gaussian_random_field(pk=lambda k: k ** -4.0, size1=h, size2=w, anisotropy=anisotropy).real
@@ -34,7 +35,24 @@ def next_batch(bs, h, w, anisotropy=True):
     x = np.array(x)
     y = np.roll(x, shift=-1, axis=2)
     y[:, :, -1] = 0.0
-    return x, y
+    return x, y, np.ones_like(x)
+
+
+def next_batch_ir(bs, h, w, **kwargs):
+    batch = get_one2many_mm(bs, h, w, **kwargs)
+    #for mm in batch[0]:
+    #    print(mm)
+    #    input()
+    return batch
+
+
+def next_batch(data_type, *args, **kwargs):
+    if data_type == 'gau':
+        return next_batch_gaussian(*args, **kwargs)
+    elif data_type == 'ir':
+        return next_batch_ir(*args, **kwargs)
+    else:
+        raise Exception('not supported data type (should be one of "gau", "ir").')
 
 
 if __name__ == '__main__':
