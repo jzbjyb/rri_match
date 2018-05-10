@@ -1,11 +1,13 @@
 import uuid
 import tensorflow as tf
+import numpy as np
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import variable_scope as vs
 from tensorflow.contrib.rnn import RNNCell, LSTMStateTuple
 #from tensorflow.contrib.rnn.python.ops.core_rnn_cell_impl import _linear
 #from tensorflow.python.ops.rnn_cell_impl import _linear
+import matplotlib.pyplot as plt
 
 
 def ln(tensor, scope=None, epsilon=1e-5):
@@ -207,12 +209,12 @@ def multi_dimensional_rnn_while_loop(rnn_size, input_data, sh, dims=None, scope_
             # If the current position is less or equal than the width, we are in the first row
             # and we need to read the zero state we added in row (h*w). 
             # If not, get the sample located at a width dstance.
-            state_up = tf.cond(tf.less_equal(time_, tf.constant(w)),
+            state_up = tf.cond(tf.less(time_, tf.constant(w)),
                                lambda: states_ta_.read(h * w),
                               lambda: states_ta_.read(get_up(time_, w)))
             
             # If it is the first step we read the zero state if not we read the inmediate last
-            state_last = tf.cond(tf.less(zero, tf.mod(time_, tf.constant(w)) ),
+            state_last = tf.cond(tf.less(zero, tf.mod(time_, tf.constant(w))),
                                  lambda: states_ta_.read(get_last(time_, w)),
                                  lambda: states_ta_.read(h * w))
 
@@ -335,18 +337,17 @@ def multi_dimensional_rnn_static(rnn_size, input_data, sh, dims=None, scope_n="l
         def get_lstm_zero_state(bs, rnn_size):
             return LSTMStateTuple(tf.zeros([bs, rnn_size], tf.float32),
                                   tf.zeros([bs, rnn_size], tf.float32))
-        with vs.variable_scope('StaticWhile'):
-            for i in range(h * w):
-                if i > 0:
-                    vs.get_variable_scope().reuse_variables()
-                state_up = get_lstm_zero_state(batch_size_runtime, rnn_size) \
-                    if i < w else states[i - w]
-                state_last = get_lstm_zero_state(batch_size_runtime, rnn_size) \
-                    if i % w == 0 else states[i - 1]
-                current_state = state_up[0], state_last[0], state_up[1], state_last[1]
-                out, state = cell(x[i], current_state)
-                outputs.append(out)
-                states.append(state)
+        for i in range(h * w):
+            if i > 0:
+                vs.get_variable_scope().reuse_variables()
+            state_up = get_lstm_zero_state(batch_size_runtime, rnn_size) \
+                if i < w else states[i - w]
+            state_last = get_lstm_zero_state(batch_size_runtime, rnn_size) \
+                if i % w == 0 else states[i - 1]
+            current_state = state_up[0], state_last[0], state_up[1], state_last[1]
+            out, state = cell(x[i], current_state)
+            outputs.append(out)
+            states.append(state)
         outputs = tf.stack(outputs)
 
         # Reshape outputs to match the shape of the imput
@@ -360,3 +361,87 @@ def multi_dimensional_rnn_static(rnn_size, input_data, sh, dims=None, scope_n="l
 
         # Return the output and the inner states
         return y, states
+
+
+class RNNVis(object):
+    def __init__(self):
+        pass
+
+
+    def set_row_col(self, row, col):
+        self.row = row
+        self.col = col
+
+
+    def plot_hidden_grad(self, hidden_state, hidden_state_grad, sequence=None,
+                         hidden_state_wrt_input_grad=None, shape=None, activation='tanh'):
+        '''
+        @param sequence:
+        @param hidden_state_grad: [batch_size, h*w, rnn_size]
+        @param hidden_state_wrt_input_grad: [batch_size, 2, rnn_size, input_size (channel)]
+        @param shape:
+        @return:
+        '''
+        bs, l, h = hidden_state_grad.shape
+        if shape == None:
+            shape = [1, 1]
+        elif len(shape) != 2 or np.prod(shape) > l or l % np.prod(shape) != 0:
+            raise Exception('shape not right')
+        step = l // np.prod(shape)
+        hidden_state_grad = np.abs(hidden_state_grad)
+        gmax = np.max(hidden_state_grad)
+        print('hidden state grad max: {}'.format(gmax))
+        shape[0] *= 2
+        add_row = sequence is not None or hidden_state_wrt_input_grad is not None
+        if hidden_state_wrt_input_grad is not None:
+            hidden_state_wrt_input_grad = np.transpose(hidden_state_wrt_input_grad, [0, 2, 1, 3])
+            hidden_state_wrt_input_grad = np.reshape(hidden_state_wrt_input_grad, [bs, h, -1])
+            hidden_state_wrt_input_grad = np.abs(hidden_state_wrt_input_grad)
+        if add_row:
+            shape[0] += 1
+        fig, axes = plt.subplots(shape[0], shape[1], figsize=(10, 8))
+        axes = axes.reshape(shape)
+        for b in range(bs):
+            if activation == 'tanh':
+                hmin, hmax = -1, 1
+            else:
+                hmin, hmax = np.min(hidden_state[b]), np.max(hidden_state[b])
+            print('hidden state activation max: {}, min: {}'.format(hmax, hmin))
+            gmax = np.max(hidden_state_grad[b])
+            for r in range(shape[0]):
+                if add_row and r == shape[0] - 1:
+                    ri = 0
+                    if sequence is not None:
+                        ax = axes[r, ri]
+                        ax.imshow(sequence[b], vmin=np.min(sequence[b]), vmax=np.max(sequence[b]),
+                                  interpolation='none', cmap='gray')
+                        ax.set_xticks([])
+                        ax.set_yticks([])
+                        ri += 1
+                    if hidden_state_wrt_input_grad is not None:
+                        ax = axes[r, ri]
+                        ax.imshow(hidden_state_wrt_input_grad[b], vmin=0, vmax=np.max(hidden_state_wrt_input_grad[b]),
+                                  interpolation='none', cmap='gray')
+                        ax.set_xticks([])
+                        ax.set_yticks([])
+                        ri += 1
+                    continue
+                for c in range(shape[1]):
+                    ax = axes[r, c]
+                    start = ((r // 2) * shape[1] + c) * step
+                    if r % 2 == 0:
+                        img = np.transpose(hidden_state[b, start:start+step, :])
+                        ax.imshow(img, vmin=hmin, vmax=hmax, interpolation='none', cmap='bwr')
+                    else:
+                        img = np.transpose(hidden_state_grad[b, start:start+step, :])
+                        ax.imshow(img, vmin=0, vmax=gmax, interpolation='none', cmap='gray')
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+            try:
+                plt.show()
+            except KeyboardInterrupt:
+                print('plot show interrupted')
+                pass
+            cont = input('press "c" to continue')
+            if cont != 'c':
+                break

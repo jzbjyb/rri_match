@@ -102,9 +102,9 @@ class CNNVis(object):
                             interpolation='none', cmap='gray')
                 ax_s.set_xticks([])
                 ax_s.set_yticks([])
-                with printoptions(precision=2, suppress=True):
+                #with printoptions(precision=2, suppress=True):
                     #print(np.rint(np.abs(image[ni, :, :, 0] * w)).astype(int))
-                    print(saliency_map[i, :, :])
+                    #print(saliency_map[i, :, :])
             try:
                 plt.show()
             except KeyboardInterrupt:
