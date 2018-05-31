@@ -36,6 +36,7 @@ from data_gen import next_batch
 from md_lstm import *
 from cnn import cnn, CNNVis
 from utils import printoptions, tf_jacobian
+from ir_match_matrix import UNIFORM_NOISE
 SEED = 2018
 random.seed(SEED)
 np.random.seed(SEED)
@@ -144,10 +145,6 @@ def main():
         saliency = tf.gradients(used_model_out, x)
         if args.rnn_type == 'static':
             rnn_states_grad = tf.gradients(used_model_out, [s.c for s in rnn_states])
-            rnn_states_bp0 = tf_jacobian(rnn_states[1].c, rnn_states[0].c)
-            rnn_states_bp1 = tf_jacobian(rnn_states[2].c, rnn_states[1].c)
-            rnn_first_states_wrt_input_grad = tf_jacobian(rnn_states[0].c, x)[:, :, 0, 0, :]
-            rnn_last_states_wrt_input_grad = tf_jacobian(rnn_states[2].c, x)[:, :, 0, 2, :]
     saver = tf.train.Saver()
     init = tf.global_variables_initializer()
     #merged_summary = tf.summary.merge_all()
@@ -228,35 +225,21 @@ def main():
             elif visualization == 'saliency':
                 saliency_map, = \
                     sess.run(saliency, feed_dict={x: batch_x, y: batch_y, x_w: batch_x_w})
+                if args.arch == 'mdlstm':
+                    # erase the gradiant at the top-left corner when the corresponding input is zero
+                    saliency_mask = np.any(np.abs(batch_x[:, 0, 0, :]) > UNIFORM_NOISE,
+                                           axis=1, keepdims=True).astype(np.float32)
+                    saliency_map[:, 0, 0, :] = saliency_map[:, 0, 0, :] * saliency_mask
                 cnn_vis.plot_saliency_map(batch_x, saliency_map)
                 if args.rnn_type == 'static':
                     rnn_states_val = sess.run([s.h for s in rnn_states],
                                               feed_dict={x: batch_x, y: batch_y, x_w: batch_x_w})
                     rnn_states_grad_val = \
                         sess.run(rnn_states_grad, feed_dict={x: batch_x, y: batch_y, x_w: batch_x_w})
-                    rfs_x_grad_val = sess.run(rnn_first_states_wrt_input_grad,
-                                   feed_dict={x: batch_x, y: batch_y, x_w: batch_x_w})
-                    rls_x_grad_val = sess.run(rnn_last_states_wrt_input_grad,
-                                   feed_dict={x: batch_x, y: batch_y, x_w: batch_x_w})
-                    rs_x_grad_val = np.stack([rfs_x_grad_val, rls_x_grad_val], axis=1)
-                    rnn_states_bp0_val, rnn_states_bp1_val = \
-                        sess.run([rnn_states_bp0, rnn_states_bp1],
-                                 feed_dict={x: batch_x, y: batch_y, x_w: batch_x_w})
-                    with printoptions(precision=3, suppress=True):
-                        print(np.sum(rnn_states_grad_val[0][0, :] * rfs_x_grad_val[0, :, 0]))
-                        print(rnn_states_grad_val[0][0, :].tolist())
-                        print(rfs_x_grad_val[0, :, 0])
-                        print(np.sum(rnn_states_grad_val[2][0, :] * rls_x_grad_val[0, :, 0]))
-                        print(rnn_states_grad_val[2][0, :].tolist())
-                        print(rls_x_grad_val[0, :, 0])
-                        print(rnn_states_bp0_val[0])
-                        print(rnn_states_bp1_val[1])
-                        print()
                     rnn_vis = RNNVis()
                     rnn_vis.plot_hidden_grad(np.transpose(np.stack(rnn_states_val), [1, 0, 2]),
                                              np.transpose(np.stack(rnn_states_grad_val), [1, 0, 2]),
-                                             sequence=np.reshape(batch_x, [batch_size, h, w]),
-                                             hidden_state_wrt_input_grad=rs_x_grad_val, shape=[1, h])
+                                             sequence=np.reshape(batch_x, [batch_size, h, w]), shape=[1, h])
         # summarize model
         #if args.tf_summary and i % args.tf_summary == 0:
         #    logging.info('summarize model to "{}" at epochs {}'.format(args.tf_summary_path, i))
