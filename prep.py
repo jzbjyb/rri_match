@@ -1,7 +1,7 @@
 import os, argparse, logging, jpype
 import numpy as np
 from jpype import *
-from utils import Vocab, WordVecotr, load_from_html, load_from_query_file
+from utils import Vocab, WordVector, load_from_html, load_from_query_file, load_train_test_file, save_train_test_file
 from config import CONFIG
 
 if __name__ == '__main__':
@@ -22,18 +22,22 @@ if __name__ == '__main__':
 
 def get_query_doc_ids(filepath):
     query_ids, doc_ids = set(), set()
-    with open(filepath, 'r') as fp:
-        for l in fp:
-            if filepath.endswith('pointwise'):
-                q, d, r = l.split('\t')
-                query_ids.add(q)
-                doc_ids.add(d)
-            elif filepath.endswith('pairwise'):
-                q, d1, d2, r = l.split('\t')
-                query_ids.add(q)
-                doc_ids.add(d1)
-                doc_ids.add(d2)
+    samples = load_train_test_file(filepath)
+    query_ids |= set([s[0] for s in samples])
+    doc_ids |= set([s[1] for s in samples])
+    if filepath.endswith('pairwise'):
+        doc_ids |= set(([s[2] for s in samples]))
     return query_ids, doc_ids
+
+
+def filter_samples(filepath_old, filepath_new, filter_query, filter_doc):
+    samples = load_train_test_file(filepath_old)
+    if filepath_old.endswith('pointwise'):
+        samples = [s for s in samples if s[0] not in filter_query and s[1] not in filter_doc]
+    elif filepath_old.endswith('pairwise'):
+        samples = [s for s in samples if s[0] not in filter_query and s[1] not in filter_doc and
+                   s[2] not in filter_doc]
+    save_train_test_file(samples, filepath_new)
 
 
 def generate_train_test():
@@ -52,20 +56,23 @@ def generate_train_test():
     test_qids = set(qids[train_size:])
     miss_docs = set()
     have_docs = set()
-    with open(os.path.join(data_dir, 'train.pointwise'), 'w') as train_fp, \
-            open(os.path.join(data_dir, 'test.pointwise'), 'w') as test_fp, \
-            open(judge_filepath, 'r') as judge_fp:
+    train_samples = []
+    test_samples = []
+    with open(judge_filepath, 'r') as judge_fp:
         for l in judge_fp:
-            q, d, r = l.split('\t')
+            q, d, r = l.rstrip().split('\t')
+            r = int(r)
             if not os.path.exists(os.path.join(data_dir, 'docs', d + '.html')):
                 miss_docs.add(d)
                 continue
             have_docs.add(d)
             if q in train_qids:
-                train_fp.write('{}'.format(l))
+                train_samples.append((q, d, r))
             elif q in test_qids:
-                test_fp.write('{}'.format(l))
+                test_samples.append((q, d, r))
     logging.info('have {} docs, miss {} docs'.format(len(have_docs), len(miss_docs)))
+    save_train_test_file(train_samples, os.path.join(data_dir, 'train.pointwise'))
+    save_train_test_file(test_samples, os.path.join(data_dir, 'test.pointwise'))
 
 
 def load_from_html_cascade(filename):
@@ -108,23 +115,32 @@ def preprocess():
             vocab.add(term)
     vocab.build()
     vocab.save_to_file(os.path.join(data_dir, 'vocab'))
+    empty_qid, empty_docid = set(), set()
     with open(os.path.join(data_dir, 'query.prep'), 'w') as fp:
         for qid in sorted(query_ids):
-            fp.write('{}\t{}\n'.format(qid, ' '.join(map(lambda x: str(x),
-                                                         vocab.encode(query_dict[qid].split())))))
+            qt = query_dict[qid].split()
+            if len(qt) == 0:
+                empty_qid.add(qid)
+                continue
+            fp.write('{}\t{}\n'.format(qid, ' '.join(map(lambda x: str(x), vocab.encode(qt)))))
     with open(os.path.join(data_dir, 'docs.prep'), 'w') as fp:
         for docid in sorted(doc_ids):
             if docid in doc_dict:
                 doc_body = doc_dict[docid]
             else:
                 doc_body = load_from_html_cascade(os.path.join(docs_dir, docid + '.html'))['body']
-            fp.write('{}\t{}\n'.format(docid,
-                ' '.join(map(lambda x: str(x), vocab.encode(doc_body)))))
+            if len(doc_body) == 0:
+                empty_docid.add(docid)
+                continue
+            fp.write('{}\t{}\n'.format(docid, ' '.join(map(lambda x: str(x), vocab.encode(doc_body)))))
+    logging.info('have {} empty query, have {} empty doc'.format(len(empty_qid), len(empty_docid)))
+    filter_samples(train_filepath, '{}.prep.{}'.format(*train_filepath.rsplit('.', 1)), empty_qid, empty_docid)
+    filter_samples(test_filepath, '{}.prep.{}'.format(*test_filepath.rsplit('.', 1)), empty_qid, empty_docid)
 
 
 def word_vector_transform():
     print('loading word vector ...')
-    wv = WordVecotr(filepath=args.word_vector_path)
+    wv = WordVector(filepath=args.word_vector_path)
     vocab = Vocab(filepath=os.path.join(args.data_dir, 'vocab'))
     print('transforming ...')
     wv.transform(vocab.get_word_list())

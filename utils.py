@@ -32,6 +32,40 @@ def tf_jacobian(y_flat, x):
     return jacobian
 
 
+def load_prep_file(filepath):
+    result = {}
+    with open(filepath, 'r') as fp:
+        for l in fp:
+            l = l.rstrip('\n')
+            if len(l) == 0:
+                continue
+            k, ws = l.split('\t')
+            result[k] = [int(w) for w in ws.split(' ') if len(w) > 0]
+    return result
+
+
+def load_train_test_file(filepath):
+    samples = []
+    with open(filepath, 'r') as fp:
+        for l in fp:
+            if filepath.endswith('pointwise'):
+                q, d, r = l.split('\t')
+                samples.append((q, d, int(r)))
+            elif filepath.endswith('pairwise'):
+                q, d1, d2, r = l.split('\t')
+                samples.append((q, d1, d2, float(r)))
+    return samples
+
+
+def save_train_test_file(samples, filepath):
+    with open(filepath, 'w') as fp:
+        for s in samples:
+            if filepath.endswith('pointwise'):
+                fp.write('{}\t{}\t{}\n'.format(s[0], s[1], s[2]))
+            elif filepath.endswith('pairwise'):
+                fp.write('{}\t{}\t{}\t{}\n'.format(s[0], s[1], s[2], s[3]))
+
+
 def load_word_vector(filepath, is_binary=False):
     if is_binary:
         raise NotImplementedError()
@@ -45,16 +79,10 @@ def load_word_vector(filepath, is_binary=False):
             rl = fp.readline().rstrip()
             l = rl.split(' ')
             words.append(l[0])
-            try:
-                v = [float(f) for f in l[1:]]
-                if len(v) != dim:
-                    raise Exception('word vector format error')
-                vectors.append(v)
-            except:
-                print(i)
-                print(rl)
-                print(l)
-                input()
+            v = [float(f) for f in l[1:]]
+            if len(v) != dim:
+                raise Exception('word vector format error')
+            vectors.append(v)
     words = np.array(words, dtype=str)
     vectors = np.array(vectors, dtype=np.float32)
     return words, vectors
@@ -112,7 +140,7 @@ def load_from_html(filename, use_boilerpipe=True, use_nltk=True, use_regex=True)
         'body': my_word_tokenize(body) if use_nltk else clean_text(body).split(' '),
     }
     t3 = time.time() - start
-    print('{}\t{}\t{}'.format(t1, t2, t3))
+    #print('{}\t{}\t{}'.format(t1, t2, t3))
     return result
 
 
@@ -194,19 +222,19 @@ class Vocab(object):
         self.ind2word = dict(zip(self.word2ind.values(), self.word2ind.keys()))
 
 
-class WordVecotr(object):
+class WordVector(object):
     def __init__(self, filepath=None, is_binary=False, initializer='uniform'):
         if initializer not in {'uniform'}:
             raise Exception('initializer not supported')
         self.initializer = initializer
         if filepath != None:
-            self.raw_words, self.raw_vecotrs = load_word_vector(filepath, is_binary=is_binary)
+            self.raw_words, self.raw_vectors = load_word_vector(filepath, is_binary=is_binary)
         self.raw_vocab_size = len(self.raw_words)
         self.raw_words2ind = dict(zip(self.raw_words, range(self.raw_vocab_size)))
-        self.dim = self.raw_vecotrs.shape[1]
-        self.vocab_size = self.raw_vecotrs.shape[0]
+        self.dim = self.raw_vectors.shape[1]
+        self.vocab_size = self.raw_vectors.shape[0]
         self.words = np.array(self.raw_words)
-        self.vectors = np.array(self.raw_vecotrs)
+        self.vectors = np.array(self.raw_vectors)
 
 
     def transform(self, new_words):
@@ -222,12 +250,12 @@ class WordVecotr(object):
         self.words = np.array(new_words)
         if self.initializer == 'uniform':
             new_part = np.random.uniform(-.1, .1, [start_ind - self.raw_vocab_size, self.dim])
-        self.vecotrs = np.concatenate([self.raw_vecotrs, new_part], axis=0)[new_ind]
+        self.vectors = np.concatenate([self.raw_vectors, new_part], axis=0)[new_ind]
         self.vocab_size = len(self.words)
 
 
     def update(self, new_vectors):
-        if new_vectors.shape != self.vecotrs.shape:
+        if new_vectors.shape != self.vectors.shape:
             raise Exception('shape is not correct')
         self.vectors = new_vectors
 
@@ -238,4 +266,4 @@ class WordVecotr(object):
         with open(filepath, 'w') as fp:
             fp.write('{} {}\n'.format(self.vocab_size, self.dim))
             for i in range(self.vocab_size):
-                fp.write('{} {}\n'.format(self.words[i], ' '.join(map(lambda x: str(x), self.vecotrs[i]))))
+                fp.write('{} {}\n'.format(self.words[i], ' '.join(map(lambda x: str(x), self.vectors[i]))))
