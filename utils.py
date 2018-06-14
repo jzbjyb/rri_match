@@ -254,6 +254,13 @@ class WordVector(object):
         self.vocab_size = len(self.words)
 
 
+    def get_vectors(self, normalize=False):
+        if normalize:
+            return self.vectors / np.sqrt(np.sum(self.vectors * self.vectors, axis=1, keepdims=True))
+        else:
+            return self.vectors
+
+
     def update(self, new_vectors):
         if new_vectors.shape != self.vectors.shape:
             raise Exception('shape is not correct')
