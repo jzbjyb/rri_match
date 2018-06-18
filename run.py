@@ -174,9 +174,9 @@ class RRI(object):
         self.saver = tf.train.Saver()
         if self.summary_path != None:
             self.train_writer = tf.summary.FileWriter(os.path.join(self.summary_path, 'train'), self.graph_)
-        self.test_wv_grad = tf.gradients(self.loss, [self.word_vector_variable])[0]
-        self.test_rnn_grad = tf.gradients(self.loss, [v for v in tf.global_variables() 
-            if 'rnn' in v.name and 'kernel' in v.name and 'Adam' not in v.name])[0]
+        #self.test_wv_grad = tf.gradients(self.loss, [self.word_vector_variable])[0]
+        #self.test_rnn_grad = tf.gradients(self.loss, [v for v in tf.global_variables() 
+        #    if 'rnn' in v.name and 'kernel' in v.name and 'Adam' not in v.name])[0]
 
 
     def check_params(self):
@@ -205,8 +205,8 @@ class RRI(object):
                     self.build_graph()
                     #scope.reuse_variables()
                     #self.build_graph_test()
-            config = tf.ConfigProto()
-            #config = tf.ConfigProto(device_count={'CPU': 10}, intra_op_parallelism_threads=2)
+            config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)
+            #config = tf.ConfigProto()
             self.session_ = tf.Session(graph=self.graph_, config=config)
             self.session_.run(self.init_all_vars)
         # train
@@ -326,7 +326,7 @@ def train_test():
     rri = RRI(max_q_len=max_q_len, max_d_len=max_d_len, max_jump_step=500, word_vector=wv.get_vectors(normalize=True),
               vocab=vocab, word_vector_trainable=False, interaction='dot', glimpse='all_next', glimpse_fix_size=10,
               min_density=0.5, jump='min_density_hard', represent='rnn_hard', rnn_size=100, max_jump_offset=100,
-              rel_level=rel_level, learning_rate=0.005, random_seed=SEED, n_epochs=10, batch_size=100, batcher=batcher,
+              rel_level=rel_level, learning_rate=0.005, random_seed=SEED, n_epochs=10, batch_size=128, batcher=batcher,
               verbose=True, save_epochs=1, reuse_model=None, save_model=None, summary_path=args.tf_summary_path)
     for e in rri.fit_iterable(train_X, train_y):
         loss = rri.test(test_X, test_y)
