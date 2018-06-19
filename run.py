@@ -209,6 +209,9 @@ class RRI(object):
             #config = tf.ConfigProto()
             self.session_ = tf.Session(graph=self.graph_, config=config)
             self.session_.run(self.init_all_vars)
+        # profile
+        builder = tf.profiler.ProfileOptionBuilder
+        opts = builder(builder.time_and_memory()).order_by('micros').build()
         # train
         for epoch in range(self.n_epochs):
             epoch += 1
@@ -226,13 +229,17 @@ class RRI(object):
                     run_metadata = tf.RunMetadata()
                     step, location, match_matrix, loss, com_r, stop_r, _ = \
                         self.session_.run(fetch, feed_dict=feed_dict, options=run_options, run_metadata=run_metadata)
+                    end_time = time.time()
                     self.train_writer.add_run_metadata(run_metadata, 'step%d' % i)
                     print('adding run metadata for', i)
+                    tf.profiler.profile(self.graph_, run_meta=run_metadata, cmd='op', options=opts)
                 else:
                     step, location, match_matrix, loss, com_r, stop_r, _ = self.session_.run(fetch, feed_dict=feed_dict)
+                    end_time = time.time()
                 loss_list.append(loss)
                 print('{:<5}\t{:>5.3f}\tloss:{:>5.3f}\tratio:{:>3.2f} {:>3.2f}'
-                    .format(i, time.time() - start_time, loss, com_r, stop_r))
+                    .format(i, end_time - start_time, loss, com_r, stop_r))
+                input('wait')
                 if args.debug and hasattr(self, 'test_rnn_grad'):
                     test_rnn_grad, = self.session_.run([self.test_rnn_grad], feed_dict=feed_dict)
                     with printoptions(precision=3, suppress=True, threshold=np.nan):
@@ -326,7 +333,7 @@ def train_test():
     rri = RRI(max_q_len=max_q_len, max_d_len=max_d_len, max_jump_step=500, word_vector=wv.get_vectors(normalize=True),
               vocab=vocab, word_vector_trainable=False, interaction='dot', glimpse='all_next', glimpse_fix_size=10,
               min_density=0.5, jump='min_density_hard', represent='rnn_hard', rnn_size=100, max_jump_offset=100,
-              rel_level=rel_level, learning_rate=0.005, random_seed=SEED, n_epochs=10, batch_size=128, batcher=batcher,
+              rel_level=rel_level, learning_rate=0.001, random_seed=SEED, n_epochs=10, batch_size=128, batcher=batcher,
               verbose=True, save_epochs=1, reuse_model=None, save_model=None, summary_path=args.tf_summary_path)
     for e in rri.fit_iterable(train_X, train_y):
         loss = rri.test(test_X, test_y)
