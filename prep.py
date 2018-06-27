@@ -1,12 +1,13 @@
-import os, argparse, logging, jpype
+import os, argparse, logging, jpype, random
 import numpy as np
 from jpype import *
-from utils import Vocab, WordVector, load_from_html, load_from_query_file, load_train_test_file, save_train_test_file
+from utils import Vocab, WordVector, load_from_html, load_from_query_file, load_train_test_file, \
+    save_train_test_file, load_judge_file, load_run_file
 from config import CONFIG
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='preprocess')
-    parser.add_argument('-a', '--action', help='action', type=str, default='prep')
+    parser.add_argument('-a', '--action', help='action', type=str, default=None)
     parser.add_argument('-m', '--max_vocab_size', help='max vocabulary size', type=int, default=50000)
     parser.add_argument('-d', '--data_dir', help='data directory', type=str)
     parser.add_argument('-r', '--train_test_ratio', help='the ratio of train and test dataset',
@@ -18,6 +19,10 @@ if __name__ == '__main__':
         logging.basicConfig(level=logging.DEBUG)
     else:
         logging.basicConfig(level=logging.INFO)
+
+SEED = 2018
+random.seed(SEED)
+np.random.seed(SEED)
 
 
 def get_query_doc_ids(filepath):
@@ -44,32 +49,47 @@ def generate_train_test():
     data_dir = args.data_dir
     query_filepath = os.path.join(data_dir, 'query')
     judge_filepath = os.path.join(data_dir, 'judgement')
+    run_filepath = os.path.join(data_dir, 'run')
+    # split train and test dataset based on queries rather than qid
     query_dict = load_from_query_file(query_filepath)
-    qids = list(query_dict.keys())
-    np.random.shuffle(qids)
-    train_size = int(len(qids) * args.train_test_ratio)
-    test_size = len(qids) - train_size
+    unique_queries = np.unique(list(query_dict.values()))
+    np.random.shuffle(unique_queries)
+    train_size = int(len(unique_queries) * args.train_test_ratio)
+    test_size = len(unique_queries) - train_size
     if train_size <= 0 or test_size <= 0:
         raise Exception('train test dataset size is incorrect')
-    logging.info('train size: {}, test size: {}'.format(train_size, test_size))
-    train_qids = set(qids[:train_size])
-    test_qids = set(qids[train_size:])
+    logging.info('#unique queries: {}, train size: {}, test size: {}'
+                 .format(len(unique_queries), train_size, test_size))
+    train_queries = set(unique_queries[:train_size])
+    test_queries = set(unique_queries[train_size:])    
+    train_qids = set([q for q in query_dict if query_dict[q] in train_queries])
+    test_qids = set([q for q in query_dict if query_dict[q] in test_queries])
     miss_docs = set()
     have_docs = set()
     train_samples = []
     test_samples = []
-    with open(judge_filepath, 'r') as judge_fp:
-        for l in judge_fp:
-            q, d, r = l.rstrip().split('\t')
-            r = int(r)
+    qd_judge = load_judge_file(judge_filepath)
+    for q in qd_judge:
+        for d in qd_judge[q]:
+            if qd_judge[q][d] is None: # skip documents without judgement
+                continue
             if not os.path.exists(os.path.join(data_dir, 'docs', d + '.html')):
                 miss_docs.add(d)
                 continue
             have_docs.add(d)
             if q in train_qids:
-                train_samples.append((q, d, r))
-            elif q in test_qids:
-                test_samples.append((q, d, r))
+                train_samples.append((q, d, qd_judge[q][d]))
+    run_result = load_run_file(run_filepath)
+    for q, _, d, rank, score, _ in run_result:
+        if qd_judge[q][d] is None: # skip documents without judgement
+            continue
+        if not os.path.exists(os.path.join(data_dir, 'docs', d + '.html')):
+            miss_docs.add(d)
+            continue
+        have_docs.add(d)
+        if q in test_qids:            
+            test_samples.append((q, d, qd_judge[q][d]))
+    samples.append((q, d, r))
     logging.info('have {} docs, miss {} docs'.format(len(have_docs), len(miss_docs)))
     save_train_test_file(train_samples, os.path.join(data_dir, 'train.pointwise'))
     save_train_test_file(test_samples, os.path.join(data_dir, 'test.pointwise'))

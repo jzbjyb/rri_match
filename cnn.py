@@ -5,23 +5,107 @@ import numpy as np
 from utils import printoptions
 
 
-def cnn(input, architecture=[(1, 3, 3, 16), (1, 2, 2, 1)], activation='relu'):
+class DynamicMaxPooling(object):
+    def __init__(self, dim=2, shape=None):
+        self.conv_dim = dim
+        self.shape = shape
+
+
+    def __call__(self, x, dpool_index, pool_size, strides, padding, name=None):
+        x_expand = tf.gather_nd(x, dpool_index)
+        if self.conv_dim == 1:
+            size = [self.shape[0] / pool_size[0]]
+            x_pool = tf.layers.max_pooling1d(x_expand, pool_size=size, strides=size, padding=padding, name=name)
+        elif self.conv_dim == 2:
+            size = [self.shape[0] / pool_size[0], self.shape[1] / pool_size[1]]
+            x_pool = tf.layers.max_pooling2d(x_expand, pool_size=size, strides=size, padding=padding, name=name)
+        return x_pool
+
+
+    @staticmethod
+    def dynamic_pooling_index_1d(leng, max_len, compress_ratio=1):
+        def dpool_index_(batch_idx, leng, max_len):
+            if leng == 0:
+                stride = max_len
+            else:
+                stride = 1.0 * max_len / leng
+            idx = [int(i / stride) for i in range(max_len)]
+            index = np.stack([np.ones_like(idx) * batch_idx, idx], axis=-1)
+            return index
+        index = []
+        dpool_bias = 0
+        if max_len % compress_ratio != 0:
+            dpool_bias = 1
+        cur_max_len = max_len // compress_ratio + dpool_bias
+        for i in range(len(leng)):
+            index.append(dpool_index_(i, leng[i] // compress_ratio, cur_max_len))
+        return np.array(index)
+
+
+    @staticmethod
+    def dynamic_pooling_index_2d(len1, len2, max_len1, max_len2, compress_ratio1=1, compress_ratio2=1):
+        def dpool_index_(batch_idx, len1_one, len2_one, max_len1, max_len2):
+            if len1_one == 0:
+                stride1 = max_len1
+            else:
+                stride1 = 1.0 * max_len1 / len1_one
+
+            if len2_one == 0:
+                stride2 = max_len2
+            else:
+                stride2 = 1.0 * max_len2 / len2_one
+            idx1_one = [int(i / stride1) for i in range(max_len1)]
+            idx2_one = [int(i / stride2) for i in range(max_len2)]
+            mesh2, mesh1 = np.meshgrid(idx2_one, idx1_one)
+            index_one = np.stack([np.ones(mesh1.shape) * batch_idx, mesh1, mesh2], axis=-1)
+            return index_one
+        index = []
+        dpool_bias1 = dpool_bias2 = 0
+        if max_len1 % compress_ratio1 != 0:
+            dpool_bias1 = 1
+        if max_len2 % compress_ratio2 != 0:
+            dpool_bias2 = 1
+        cur_max_len1 = max_len1 // compress_ratio1 + dpool_bias1
+        cur_max_len2 = max_len2 // compress_ratio2 + dpool_bias2
+        for i in range(len(len1)):
+            index.append(dpool_index_(i, len1[i] // compress_ratio1, 
+                         len2[i] // compress_ratio2, cur_max_len1, cur_max_len2))
+        return np.array(index)
+
+
+def cnn(x, architecture=[(3, 3, 1, 16), (1, 2, 2, 1)], activation='relu', dpool_index=None):
     if activation not in {None, 'relu', 'tanh'}:
         raise Exception('not supported activation')
     if len(architecture) <= 0 or len(architecture) % 2 != 0:
         raise Exception('cnn architecture bug')
-    last = input
+    if len(architecture[0]) == 3:
+        conv_dim = 1
+    elif len(architecture[0]) == 4:
+        conv_dim = 2
+    else:
+        raise Exception('architecture not correct')
+    if conv_dim == 1:
+        shape = x.get_shape().as_list()[1:2]
+    elif conv_dim == 2:
+        shape = x.get_shape().as_list()[1:3]
+    last = x
     for i in range(len(architecture) // 2):
         layer = i + 1
         conv_size = architecture[i*2]
         pool_size = architecture[i*2+1]
         with tf.name_scope('conv{}'.format(layer)) as scope:
-            kernel = tf.Variable(tf.truncated_normal(conv_size, dtype=tf.float32, stddev=1e-1),
-                                 name='weights')
+            #kernel = tf.Variable(tf.truncated_normal(conv_size, dtype=tf.float32, stddev=1e-1), name='weights')
+            kernel = tf.get_variable('weights', shape=conv_size, dtype=tf.float32, initializer=\
+                                     tf.truncated_normal_initializer(mean=0.0, stddev=1e-1, dtype=tf.float32))
             tf.add_to_collection('conv_kernel', kernel)
-            conv = tf.nn.conv2d(last, kernel, [1, 1, 1, 1], padding='SAME')
-            biases = tf.Variable(tf.constant(0.0, shape=[conv_size[-1]], dtype=tf.float32),
-                                 trainable=True, name='biases')
+            if conv_dim == 1:
+                conv = tf.nn.conv1d(last, kernel, 1, padding='SAME')
+            elif conv_dim == 2:
+                conv = tf.nn.conv2d(last, kernel, [1, 1, 1, 1], padding='SAME')
+            #biases = tf.Variable(tf.constant(0.0, shape=[conv_size[-1]], dtype=tf.float32),
+            #                     trainable=True, name='biases')
+            biases = tf.get_variable('biases', shape=[conv_size[-1]], dtype=tf.float32, initializer=\
+                                     tf.zeros_initializer())
             out = tf.nn.bias_add(conv, biases)
             if activation == 'relu':
                 out = tf.nn.relu(out, name=scope)
@@ -29,8 +113,17 @@ def cnn(input, architecture=[(1, 3, 3, 16), (1, 2, 2, 1)], activation='relu'):
                 out = tf.nn.tanh(out, name=scope)
             tf.add_to_collection('feature_map', out)
         with tf.name_scope('pool{}'.format(layer)) as scope:
-            out = tf.nn.max_pool(out, ksize=pool_size, strides=pool_size,
-                                 padding='SAME', name='pool')
+            if dpool_index is not None and layer == 1: # dynamic pooling
+                dynamic_max_pool = DynamicMaxPooling(dim=conv_dim, shape=shape)
+                out = dynamic_max_pool(out, dpool_index, pool_size=pool_size, strides=pool_size, 
+                                       padding='SAME', name='pool')
+            else: # conventional pooling
+                if conv_dim == 1:
+                    out = tf.layers.max_pooling1d(out, pool_size=pool_size, strides=pool_size, 
+                                                  padding='SAME', name='pool')
+                elif conv_dim == 2:
+                    out = tf.layers.max_pooling2d(out, pool_size=pool_size, strides=pool_size, 
+                                                  padding='SAME', name='pool')
         last = out
     return last
 

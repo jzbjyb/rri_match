@@ -1,6 +1,7 @@
 import sys
 import tensorflow as tf
 from tensorflow.python.ops import variable_scope as vs
+from cnn import cnn
 jumper = tf.load_op_library('./jumper.so')
 
 
@@ -24,10 +25,12 @@ def batch_slice(batch, start, offset, pad_values=None):
 
 
 def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glimpse='fix_hard', glimpse_fix_size=None,
-        min_density=None, jump='max_hard', represent='sum_hard', rnn_size=None, max_jump_offset=None):
+        min_density=None, jump='max_hard', represent='sum_hard', aggregate='max', rnn_size=None, max_jump_offset=None,
+        query_dpool_index=None, doc_dpool_index=None):
     bs = tf.shape(query)[0]
     max_q_len = tf.shape(query)[1]
     max_d_len = tf.shape(doc)[1]
+    word_vector_dim = word_vector.get_shape().as_list()[1]
     with vs.variable_scope('Embed'):
         query_emb = tf.nn.embedding_lookup(word_vector, query)
         doc_emb = tf.nn.embedding_lookup(word_vector, doc)
@@ -52,9 +55,12 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
                                   clear_after_read=False, dynamic_size=True)
         if represent == 'sum_hard' or represent == 'test' or represent == 'rnn_hard':
             state_ta = state_ta.write(0, tf.zeros([bs, 1]))
+        elif represent == 'cnn_hard':
+            state_ta = state_ta.write(0, tf.zeros([bs, 1]))
         else:
             raise NotImplementedError()
         step = tf.zeros([bs], dtype=tf.int32)
+        total_offset = tf.zeros([bs], dtype=tf.float32)
         is_stop = tf.zeros([bs], dtype=tf.bool)
         time = tf.constant(0)
         '''
@@ -130,7 +136,7 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
                                   [ind, match_matrix, start, end, representation_ta],
                                   parallel_iterations=1000)
                 representation = representation_ta.stack()
-            elif represent == 'rnn_hard':
+            elif represent == 'rnn_hard_memory_hungry':
                 start = tf.cast(tf.floor(location[:, :2]), dtype=tf.int32)
                 offset = tf.cast(tf.floor(location[:, 2:]), dtype=tf.int32)
                 d_start, d_offset = start[:, 0], offset[:, 0]
@@ -144,15 +150,53 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
                 q_outputs, q_state = tf.nn.dynamic_rnn(rnn_cell, q_region, initial_state=initial_state,
                                                        sequence_length=q_offset, dtype=tf.float32)
                 representation = tf.reduce_sum(d_state * q_state, axis=1, keep_dims=True)
+            elif represent in {'rnn_hard', 'cnn_hard'}:
+                start = tf.cast(tf.floor(location[:, :2]), dtype=tf.int32)
+                offset = tf.cast(tf.floor(location[:, 2:]), dtype=tf.int32)
+                d_start, d_offset = start[:, 0], offset[:, 0]
+                q_start, q_offset = start[:, 1], offset[:, 1]
+                d_region = batch_slice(doc, d_start, d_offset, pad_values=0)
+                q_region = batch_slice(query, q_start, q_offset, pad_values=0)
+                d_region = tf.nn.embedding_lookup(word_vector, d_region)
+                q_region = tf.nn.embedding_lookup(word_vector, q_region)
+                if represent == 'rnn_hard':
+                    rnn_cell = tf.nn.rnn_cell.BasicRNNCell(rnn_size)
+                    initial_state = rnn_cell.zero_state(bs, dtype=tf.float32)
+                    d_outputs, d_state = tf.nn.dynamic_rnn(rnn_cell, d_region, initial_state=initial_state,
+                                                           sequence_length=d_offset, dtype=tf.float32)
+                    q_outputs, q_state = tf.nn.dynamic_rnn(rnn_cell, q_region, initial_state=initial_state,
+                                                           sequence_length=q_offset, dtype=tf.float32)
+                    representation = tf.reduce_sum(d_state * q_state, axis=1, keep_dims=True)
+                elif represent == 'cnn_hard':
+                    if max_jump_offset == None:
+                        raise ValueError('max_jump_offset must be set when CNN is used')
+                    d_region = tf.pad(d_region, [[0, 0], [0, max_jump_offset - tf.shape(d_region)[1]], [0, 0]], 
+                                      'CONSTANT', constant_values=0)
+                    d_region.set_shape([None, max_jump_offset, word_vector_dim])
+                    q_region = tf.pad(q_region, [[0, 0], [0, max_jump_offset - tf.shape(q_region)[1]], [0, 0]],
+                                      'CONSTANT', constant_values=0)
+                    d_region.set_shape([None, max_jump_offset, word_vector_dim])
+                    q_region.set_shape([None, max_jump_offset, word_vector_dim])
+                    doc_arch, query_arch = [[3, word_vector_dim, 4], [10]], [[3, word_vector_dim, 4], [5]]
+                    cnn_final_dim = doc_arch[-1][0] * doc_arch[-2][-1] + query_arch[-1][0] * query_arch[-2][-1]
+                    with vs.variable_scope('CNN'):
+                        doc_repr = cnn(d_region, architecture=doc_arch, activation='relu',
+                                       dpool_index=doc_dpool_index)
+                        vs.get_variable_scope().reuse_variables()
+                        query_repr = cnn(q_region, architecture=query_arch, activation='relu', 
+                                         dpool_index=query_dpool_index)
+                    dq_repr = tf.reshape(tf.concat([doc_repr, query_repr], axis=1), [-1, cnn_final_dim])
+                    dq_repr = tf.layers.dense(inputs=dq_repr, units=4, activation=tf.nn.relu)
+                    representation = tf.layers.dense(inputs=dq_repr, units=1, activation=tf.nn.relu)
             elif represent == 'test':
                 representation = tf.ones_like(location[:, :1])
             else:
                 raise NotImplementedError()
             return representation
-        def cond(time, is_stop, step, state_ta, location_ta, dq_size):
+        def cond(time, is_stop, step, state_ta, location_ta, dq_size, total_offset):
             return tf.logical_and(tf.logical_not(tf.reduce_all(is_stop)),
                                   tf.less(time, tf.constant(max_jump_step)))
-        def body(time, is_stop, step, state_ta, location_ta, dq_size):
+        def body(time, is_stop, step, state_ta, location_ta, dq_size, total_offset):
             cur_location = location_ta.read(time)
             #time = tf.Print(time, [time], message='time:')
             with vs.variable_scope('Glimpse'):
@@ -170,23 +214,35 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
                 new_stop = tf.reduce_any(new_location[:, :2] > tf.cast(dq_size - 1, tf.float32), axis=1)
                 is_stop = tf.logical_or(is_stop, new_stop)
                 location_ta = location_ta.write(time + 1, tf.where(is_stop, cur_location, new_location))
+                # total length to be modeled
+                total_offset += tf.where(is_stop, tf.zeros_like(total_offset), new_location[:, 2])
+                # actual rnn length (with padding)
+                #total_offset += tf.where(is_stop, tf.zeros_like(total_offset), 
+                #    tf.ones_like(total_offset) * \
+                #    tf.reduce_max(tf.where(is_stop, tf.zeros_like(total_offset), new_location[:, 2])))
             with vs.variable_scope('Represent'):
                 # location_one_out is to prevent duplicate time-consuming calculation
                 location_one_out = tf.where(is_stop, tf.ones_like(cur_location), location_ta.read(time + 1))
                 new_repr = get_representation(match_matrix, dq_size, query_emb, doc_emb, location_one_out)
                 state_ta = state_ta.write(time + 1, tf.where(is_stop, state_ta.read(time), new_repr))
             step = step + tf.where(is_stop, tf.zeros([bs], dtype=tf.int32), tf.ones([bs], dtype=tf.int32))
-            return time + 1, is_stop, step, state_ta, location_ta, dq_size
-        _, is_stop, step, state_ta, location_ta, dq_size = \
-            tf.while_loop(cond, body, [time, is_stop, step, state_ta, location_ta, dq_size], parallel_iterations=1)
+            return time + 1, is_stop, step, state_ta, location_ta, dq_size, total_offset
+        _, is_stop, step, state_ta, location_ta, dq_size, total_offset = \
+            tf.while_loop(cond, body, [time, is_stop, step, state_ta, location_ta, dq_size, total_offset], 
+                          parallel_iterations=1)
     with vs.variable_scope('Aggregate'):
         states = state_ta.stack()
         location = location_ta.stack()
         location = tf.transpose(location, [1, 0 ,2])
         stop_ratio = tf.reduce_mean(tf.cast(is_stop, tf.float32))
         complete_ratio = tf.reduce_mean(tf.reduce_min(
-            [(location[:, -1, 0] + location[:, -1, 2]) / tf.cast(dq_size[:, 1], dtype=tf.float32),
+            [(location[:, -1, 0] + location[:, -1, 2]) / tf.cast(dq_size[:, 0], dtype=tf.float32),
              tf.ones([bs], dtype=tf.float32)], axis=0))
-        return tf.reduce_max(states, 0), {'step': step, 'location': location, 'match_matrix': match_matrix,
-                                          'complete_ratio': complete_ratio, 'stop_ratio': stop_ratio,
-                                          'doc_emb': doc_emb}
+        if aggregate == 'max':
+            signal = tf.reduce_max(states, 0)
+        elif aggregate == 'sum':
+            signal = tf.reduce_sum(states, 0) - states[-1] * \
+                tf.cast(tf.expand_dims(time - step, axis=-1), dtype=tf.float32)
+        return signal, {'step': step, 'location': location, 'match_matrix': match_matrix, 
+                        'complete_ratio': complete_ratio, 'stop_ratio': stop_ratio,
+                        'doc_emb': doc_emb, 'total_offset': total_offset}

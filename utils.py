@@ -1,4 +1,5 @@
 import contextlib, sys, re, logging, time, html
+from collections import defaultdict
 import numpy as np
 import tensorflow as tf
 from bs4 import BeautifulSoup
@@ -30,6 +31,27 @@ def tf_jacobian(y_flat, x):
     x_len = len(x.get_shape())
     jacobian = tf.transpose(jacobian, [1, 0] + list(range(2, x_len + 1)))
     return jacobian
+
+
+def load_judge_file(filepath):
+    qd_judge = defaultdict(lambda: defaultdict(lambda: None))
+    with open(filepath, 'r') as fp:
+        for l in fp:
+            q, d, r = l.rstrip().split('\t')
+            r = int(r)
+            qd_judge[q][d] = r
+    return qd_judge
+
+
+def load_run_file(filepath):
+    result = []
+    with open(filepath, 'r') as fp:
+        for l in fp:
+            q, q0, d, rank, score, tag = l.rstrip().split(' ')
+            rank = int(rank)
+            score = float(score)
+            result.append((q, q0, d, rank, score, tag))
+    return result
 
 
 def load_prep_file(filepath):

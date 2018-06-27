@@ -335,10 +335,12 @@ class MinDensityMultiCpuOp : public OpKernel {
           next_location(b, 3) = location(b, 3);
         }
         /*
-        std::cout << "batch sample: " << b
-                  << ", jump ind: " << next_location(b, 0)
-                  << ", jump offset: " << next_location(b, 2)
-                  << std::endl;
+        if (next_location(b, 2) >= 1000) {
+          std::cout << "batch sample: " << b
+                    << ", jump ind: " << next_location(b, 0)
+                    << ", jump offset: " << next_location(b, 2)
+                    << std::endl;
+        }
         */
       }
     }
