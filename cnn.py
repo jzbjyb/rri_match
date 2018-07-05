@@ -24,6 +24,22 @@ class DynamicMaxPooling(object):
 
     @staticmethod
     def dynamic_pooling_index_1d(leng, max_len, compress_ratio=1):
+        bs = tf.shape(leng)[0]
+        dpool_bias = 0
+        if max_len % compress_ratio != 0:
+            dpool_bias = 1
+        cur_max_len = max_len // compress_ratio + dpool_bias
+        leng = leng // compress_ratio
+        bidx = tf.ones([bs, cur_max_len], dtype=tf.int32) * tf.expand_dims(tf.range(bs), axis=-1)
+        leng = tf.maximum(1, leng)
+        stride = tf.cast(cur_max_len / leng, dtype=tf.float32)
+        lidx = tf.cast(tf.cast(tf.expand_dims(tf.range(cur_max_len), axis=0), dtype=tf.float32) / 
+            tf.expand_dims(stride, axis=-1), dtype=tf.int32)
+        return tf.stack([bidx, lidx], axis=-1)
+
+
+    @staticmethod
+    def dynamic_pooling_index_1d_np(leng, max_len, compress_ratio=1):
         def dpool_index_(batch_idx, leng, max_len):
             if leng == 0:
                 stride = max_len
@@ -43,7 +59,7 @@ class DynamicMaxPooling(object):
 
 
     @staticmethod
-    def dynamic_pooling_index_2d(len1, len2, max_len1, max_len2, compress_ratio1=1, compress_ratio2=1):
+    def dynamic_pooling_index_2d_np(len1, len2, max_len1, max_len2, compress_ratio1=1, compress_ratio2=1):
         def dpool_index_(batch_idx, len1_one, len2_one, max_len1, max_len2):
             if len1_one == 0:
                 stride1 = max_len1

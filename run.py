@@ -173,11 +173,12 @@ class RRI(object):
             self.doc = tf.placeholder(tf.int32, shape=[None, None], name='doc') # dynamic doc length
             self.qd_size = tf.placeholder(tf.int32, shape=[None, 2], name='query_doc_size')
             self.relevance = tf.placeholder(tf.int32, shape=[None], name='relevance')
-            self.query_dpool_index = tf.placeholder(tf.int32, shape=[None, None, 2]) # dynamic query pooling index
-            self.doc_dpool_index = tf.placeholder(tf.int32, shape=[None, None, 2]) # dynamic doc pooling index
+            self.query_dpool_index = tf.placeholder(tf.int32, shape=[None, self.max_jump_offset, 2]) # dynamic query pooling index
+            self.doc_dpool_index = tf.placeholder(tf.int32, shape=[None, self.max_jump_offset, 2]) # dynamic doc pooling index
             self.word_vector_variable = tf.get_variable('word_vector', self.word_vector.shape,
                                                         initializer=tf.constant_initializer(self.word_vector),
                                                         trainable=self.word_vector_trainable)
+            self.keep_prob = tf.placeholder(tf.float32) # dropout prob
         with vs.variable_scope('Arch'):
             self.outputs, self.rri_info = \
                 rri(self.query, self.doc, tf.reverse(self.qd_size, [1]), max_jump_step=self.max_jump_step,
@@ -185,7 +186,7 @@ class RRI(object):
                     glimpse_fix_size=self.glimpse_fix_size, min_density=self.min_density, jump=self.jump,
                     represent=self.represent, aggregate=self.aggregate, rnn_size=self.rnn_size, 
                     max_jump_offset=self.max_jump_offset, query_dpool_index=self.query_dpool_index, 
-                    doc_dpool_index=self.doc_dpool_index)
+                    doc_dpool_index=self.doc_dpool_index, keep_prob=self.keep_prob)
         if self.loss_func == 'classification':
             with vs.variable_scope('ClassificationLoss'):
                 logit_w = tf.get_variable('logit_weight', shape=[self.outputs.get_shape()[1], self.rel_level])
@@ -228,14 +229,18 @@ class RRI(object):
             raise ValueError('loss_func not supported')
 
 
-    def feed_dict_postprocess(self, fd):
+    def feed_dict_postprocess(self, fd, is_train=True):
         feed_dict = {self.query: fd['query'], self.doc: fd['doc'], self.qd_size: fd['qd_size'],
                      self.relevance: fd['relevance']}
         if 'cnn' in self.represent:
             feed_dict[self.query_dpool_index] = \
-                DynamicMaxPooling.dynamic_pooling_index_1d(fd['qd_size'][:, 0], self.max_jump_offset)
+                DynamicMaxPooling.dynamic_pooling_index_1d_np(fd['qd_size'][:, 0], self.max_jump_offset)
             feed_dict[self.doc_dpool_index] = \
-                DynamicMaxPooling.dynamic_pooling_index_1d(fd['qd_size'][:, 1], self.max_jump_offset)
+                DynamicMaxPooling.dynamic_pooling_index_1d_np(fd['qd_size'][:, 1], self.max_jump_offset)
+        if is_train:
+            feed_dict[self.keep_prob] = 0.5
+        else:
+            feed_dict[self.keep_prob] = 1.0
         return feed_dict
 
 
@@ -271,7 +276,7 @@ class RRI(object):
                 fetch = [self.rri_info['step'], self.rri_info['location'], self.rri_info['match_matrix'],
                          self.loss, self.rri_info['complete_ratio'], self.rri_info['stop_ratio'], 
                          self.rri_info['total_offset'], self.trainer]
-                feed_dict = self.feed_dict_postprocess(fd)
+                feed_dict = self.feed_dict_postprocess(fd, is_train=True)
                 start_time = time.time()
                 if self.summary_path != None and i % 1 == 0: # run statistics
                     step, location, match_matrix, loss, com_r, stop_r, total_offset, _ = \
@@ -328,7 +333,7 @@ class RRI(object):
                         continue
                     with printoptions(precision=3, suppress=True, threshold=np.nan):
                         for b in range(batch_size):
-                            print(fd['qd_size'][b, 1], step[b])
+                            print('qd_size: {}, step: {}'.format(fd['qd_size'][b], step[b]))
                             print(location[b])
                             print(np.max(match_matrix[b][:fd['qd_size'][b, 1], :], axis=1))
                             input()
@@ -355,7 +360,7 @@ class RRI(object):
             raise AttributeError('need fit or fit_iterable to be called before prediction')
         loss_list = []
         for i, fd in enumerate(self.batcher(X, y, self.batch_size, use_permutation=False)):
-            feed_dict = self.feed_dict_postprocess(fd)
+            feed_dict = self.feed_dict_postprocess(fd, is_train=False)
             loss, = self.session_.run([self.loss], feed_dict=feed_dict)
             loss_list.append(loss)
         return np.mean(loss_list)
@@ -368,7 +373,7 @@ class RRI(object):
         q_list, doc_list, score_list = [], [], []
         for i, fd in enumerate(self.batcher(X, None, self.batch_size, use_permutation=False)):
             fd['relevance'] = np.ones([fd['query'].shape[0]], dtype=np.int32) * (self.rel_level - 1)
-            feed_dict = self.feed_dict_postprocess(fd)
+            feed_dict = self.feed_dict_postprocess(fd, is_train=False)
             if self.loss_func == 'classification':
                 if self.rel_level != 2:
                     raise Exception('prediction under classification loss function with >2 \
@@ -423,9 +428,9 @@ def train_test():
             test_qd_judge[q][d] = relevance_mapper(test_qd_judge[q][d])
     print('number of samples: {}'.format(sum([len(x['query']) for x in train_X])))
     rri = RRI(max_q_len=max_q_len, max_d_len=max_d_len, max_jump_step=200, word_vector=wv.get_vectors(normalize=True),
-              vocab=vocab, word_vector_trainable=False, interaction='dot', glimpse='all_next', glimpse_fix_size=10,
-              min_density=0.5, jump='min_density_hard', represent='cnn_hard', aggregate='max', rnn_size=100, 
-              max_jump_offset=50, rel_level=rel_level, loss_func='regression', learning_rate=0.001, 
+              vocab=vocab, word_vector_trainable=False, interaction='dot', glimpse='all_next_hard', glimpse_fix_size=10,
+              min_density=0.5, jump='min_density_hard', represent='cnn_hard', aggregate='max', rnn_size=16, 
+              max_jump_offset=50, rel_level=rel_level, loss_func='classification', learning_rate=0.0001, 
               random_seed=SEED, n_epochs=10, batch_size=256, batcher=batcher, verbose=1, save_epochs=1, 
               reuse_model=None, save_model=None, summary_path=args.tf_summary_path)
     for e in rri.fit_iterable(train_X, train_y):
