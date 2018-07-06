@@ -2,6 +2,7 @@ import argparse, logging, os, random, time
 from itertools import groupby
 import numpy as np
 from sklearn.base import BaseEstimator, ClassifierMixin
+import matplotlib.pyplot as plt
 from utils import Vocab, WordVector, load_prep_file, load_train_test_file, printoptions, load_judge_file
 from metric import evaluate, ndcg
 from rri import rri
@@ -402,6 +403,7 @@ def train_test():
     w2v_file = os.path.join(args.data_dir, 'w2v')
     vocab_file = os.path.join(args.data_dir, 'vocab')
     rel_level = 2
+    max_jump_offset = 50
     print('loading word vector ...')
     wv = WordVector(filepath=w2v_file)
     vocab = Vocab(filepath=vocab_file)
@@ -420,6 +422,19 @@ def train_test():
         return r
     train_X, train_y, batcher = data_assemble(train_file, query_raw, doc_raw, max_q_len, max_d_len, 
                                               relevance_mapper=relevance_mapper)
+    '''
+    doc_len_list = []
+    for q_x in train_X:
+        for d in q_x['qd_size']:
+            doc_len_list.append(d[1])
+    doc_len_list = np.array(doc_len_list, dtype=np.int32)
+    doc_len_list = [min(max_jump_offset ** 2 / d, max_jump_offset) for d in doc_len_list]
+    plt.hist(doc_len_list, bins=max_jump_offset)
+    plt.xlim(xmin=0, xmax=max_jump_offset)
+    plt.xlabel('preserve number')
+    plt.ylabel('number')
+    plt.show()
+    '''
     test_X, test_y, _ = data_assemble(test_file, query_raw, doc_raw, max_q_len, max_d_len, 
                                       relevance_mapper=relevance_mapper)
     test_qd_judge = load_judge_file(test_file)
@@ -430,7 +445,7 @@ def train_test():
     rri = RRI(max_q_len=max_q_len, max_d_len=max_d_len, max_jump_step=200, word_vector=wv.get_vectors(normalize=True),
               vocab=vocab, word_vector_trainable=False, interaction='dot', glimpse='all_next_hard', glimpse_fix_size=10,
               min_density=0.5, jump='min_density_hard', represent='cnn_hard', aggregate='max', rnn_size=16, 
-              max_jump_offset=50, rel_level=rel_level, loss_func='classification', learning_rate=0.0001, 
+              max_jump_offset=max_jump_offset, rel_level=rel_level, loss_func='classification', learning_rate=0.0001, 
               random_seed=SEED, n_epochs=10, batch_size=256, batcher=batcher, verbose=1, save_epochs=1, 
               reuse_model=None, save_model=None, summary_path=args.tf_summary_path)
     for e in rri.fit_iterable(train_X, train_y):
