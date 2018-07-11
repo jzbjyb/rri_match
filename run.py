@@ -404,6 +404,7 @@ def train_test():
     vocab_file = os.path.join(args.data_dir, 'vocab')
     rel_level = 2
     max_jump_offset = 50
+    max_d_len_consider = 50000
     print('loading word vector ...')
     wv = WordVector(filepath=w2v_file)
     vocab = Vocab(filepath=vocab_file)
@@ -411,6 +412,13 @@ def train_test():
     print('loading query doc content ...')
     query_raw = load_prep_file(query_file)
     doc_raw = load_prep_file(doc_file)
+    print('truncate long document')
+    d_long_count = 0
+    for d in doc_raw:
+        if len(doc_raw[d]) > max_d_len_consider:
+            d_long_count += 1
+            doc_raw[d] = doc_raw[d][:max_d_len_consider]
+    print('total doc: {}, long doc: {}'.format(len(doc_raw), d_long_count))
     max_q_len = max([len(query_raw[q]) for q in query_raw])
     max_d_len = max([len(doc_raw[d]) for d in doc_raw])
     print('data assemble with max_q_len: {}, max_d_len: {} ...'.format(max_q_len, max_d_len))

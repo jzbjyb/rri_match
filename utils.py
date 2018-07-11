@@ -2,7 +2,7 @@ import contextlib, sys, re, logging, time, html
 from collections import defaultdict
 import numpy as np
 import tensorflow as tf
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, UnicodeDammit
 from boilerpipe.extract import Extractor
 from nltk.tokenize import word_tokenize
 
@@ -33,14 +33,38 @@ def tf_jacobian(y_flat, x):
     return jacobian
 
 
-def load_judge_file(filepath):
+def load_query_log(filepath, format='bing', iterable=True):
+    if format not in {'bing'}:
+        raise NotImplementedError('format not supported')
+    with open(filepath, 'r') as fp:
+        for l in fp:
+            l = l.strip()
+            if len(l) == 0:
+                continue
+            if format == 'bing':
+                uid, sid, sstime, nq, qid, q, qtime, nc, rank, url, ctime, dtime = l.split('\t')
+                rank = int(rank)
+                dtime = float(dtime)
+                fetch = [uid, sid, sstime, nq, qid, q, qtime, nc, rank, url, ctime, dtime]
+            if iterable:
+                yield fetch
+
+
+def load_judge_file(filepath, scale=int):
     qd_judge = defaultdict(lambda: defaultdict(lambda: None))
     with open(filepath, 'r') as fp:
         for l in fp:
             q, d, r = l.rstrip().split('\t')
-            r = int(r)
+            r = scale(r)
             qd_judge[q][d] = r
     return qd_judge
+
+
+def save_judge_file(qd_judge, filepath):
+    with open(filepath, 'w') as fp:
+        for qid in qd_judge:
+            for docid in qd_judge[qid]:
+                fp.write('{}\t{}\t{}\n'.format(qid, docid, qd_judge[qid][docid]))
 
 
 def load_run_file(filepath):
@@ -124,8 +148,21 @@ def my_word_tokenize(text):
     return text
 
 
-def load_from_html(filename, use_boilerpipe=True, use_nltk=True, use_regex=True):
-    content = open(filename, 'r').read()
+def load_from_html(filename, use_boilerpipe=True, use_nltk=True, use_regex=True, binary=False):
+    if binary:
+        charset = UnicodeDammit(open(filename, 'rb').read())
+        charset = charset.original_encoding
+        try:
+            content = open(filename, 'r', encoding=charset).read()
+        except Exception as e:
+            # if has error, return empty results
+            logging.warn('encode error: {}, {}'.format(filename, e))
+            return {
+                'title': [],
+                'body': []
+            }
+    else:
+        content = open(filename, 'r', encoding='utf-8').read()
     start = time.time()
     if not use_regex or not use_boilerpipe:
         bs = BeautifulSoup(content, 'html.parser')
@@ -170,9 +207,15 @@ def load_from_query_file(filepath):
     query_dict = {}
     with open(filepath, 'r') as fp:
         for l in fp:
-            qid, query = l.split('\t')
+            qid, query = l.rstrip('\n').split('\t')
             query_dict[qid] = query
     return query_dict
+
+
+def save_query_file(queries, filepath):
+    with open(filepath, 'w') as fp:
+        for q in queries:
+            fp.write('{}\t{}\n'.format(q[0], q[1]))
 
 
 class Vocab(object):
@@ -259,7 +302,7 @@ class WordVector(object):
         self.vectors = np.array(self.raw_vectors)
 
 
-    def transform(self, new_words):
+    def transform(self, new_words, oov_filepath=None):
         start_ind = self.raw_vocab_size
         def new_inder(w):
             nonlocal start_ind
@@ -270,6 +313,13 @@ class WordVector(object):
                 return start_ind - 1
         new_ind = [new_inder(w) for w in new_words]
         self.words = np.array(new_words)
+        logging.info('total {} words, miss {} words'
+                     .format(len(new_words), start_ind - self.raw_vocab_size))
+        if oov_filepath != None:
+            with open(oov_filepath, 'w') as fp:
+                for i in range(len(new_words)):
+                    if new_ind[i] >= self.raw_vocab_size:
+                        fp.write('{}\n'.format(new_words[i]))
         if self.initializer == 'uniform':
             new_part = np.random.uniform(-.1, .1, [start_ind - self.raw_vocab_size, self.dim])
         self.vectors = np.concatenate([self.raw_vectors, new_part], axis=0)[new_ind]
