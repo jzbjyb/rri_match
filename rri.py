@@ -148,8 +148,12 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
             q_region = tf.pad(q_region, [[0, 0], [0, max_jump_offset - tf.shape(q_region)[1]], [0, 0]],
                               'CONSTANT', constant_values=0)
             q_region.set_shape([None, max_jump_offset, word_vector_dim])
-            doc_arch, query_arch = [[3, word_vector_dim, 4], [10]], [[3, word_vector_dim, 4], [5]]
-            cnn_final_dim = doc_arch[-1][0] * doc_arch[-2][-1] + query_arch[-1][0] * query_arch[-2][-1]
+            doc_after_pool_size = max_jump_offset
+            doc_arch = [[3, word_vector_dim, 4], [doc_after_pool_size]]
+            query_arch = [[3, word_vector_dim, 4], [max_jump_offset]]
+            cnn_final_dim = 10 * doc_arch[-2][-1] + 5 * query_arch[-2][-1]
+            #doc_arch, query_arch = [[3, word_vector_dim, 4], [10]], [[3, word_vector_dim, 4], [5]]
+            #cnn_final_dim = doc_arch[-1][0] * doc_arch[-2][-1] + query_arch[-1][0] * query_arch[-2][-1]
             with vs.variable_scope('CNN'):
                 doc_dpool_index = DynamicMaxPooling.dynamic_pooling_index_1d(d_offset, max_jump_offset)
                 #doc_dpool_index = kwargs['doc_dpool_index']
@@ -160,6 +164,24 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
                 #query_dpool_index = kwargs['query_dpool_index']
                 query_repr = cnn(q_region, architecture=query_arch, activation='relu', 
                                  dpool_index=query_dpool_index)
+            with vs.variable_scope('LengthOrderAwareMaskPooling'):
+                mask_prob = tf.minimum(tf.ceil(doc_after_pool_size ** 2 / dq_size[:, 0]), doc_after_pool_size) / 50
+                # length-aware mask
+                mask_ber = tf.distributions.Bernoulli(probs=mask_prob)
+                mask = tf.transpose(mask_ber.sample([doc_after_pool_size]), [1, 0])
+                # order-aware pooling
+                #mask_for_zero = tf.cast(tf.expand_dims(tf.range(doc_after_pool_size), axis=0) < \
+                #    (doc_after_pool_size - tf.reduce_sum(mask, axis=1, keep_dims=True)), dtype=tf.int32)
+                #mask = tf.cast(tf.concat([mask, mask_for_zero], axis=1), dtype=tf.bool)
+                #doc_repr = tf.boolean_mask(tf.concat([doc_repr, tf.zeros_like(doc_repr)], axis=1), mask)
+                #doc_repr = tf.reshape(doc_repr, [bs, doc_after_pool_size, doc_arch[-2][-1]])
+                # normal pooling
+                doc_repr = doc_repr * tf.cast(tf.expand_dims(mask, axis=-1), dtype=tf.float32)
+                # pooling
+                doc_repr = tf.layers.max_pooling1d(doc_repr, pool_size=[5], strides=[5],
+                                                   padding='SAME', name='pool')
+                query_repr = tf.layers.max_pooling1d(query_repr, pool_size=[10], strides=[10],
+                                                     padding='SAME', name='pool')
             dq_repr = tf.reshape(tf.concat([doc_repr, query_repr], axis=1), [-1, cnn_final_dim])
             dq_repr = tf.nn.dropout(dq_repr, kwargs['keep_prob'])
             dq_repr = tf.layers.dense(inputs=dq_repr, units=4, activation=tf.nn.relu)
