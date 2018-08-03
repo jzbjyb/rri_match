@@ -1,0 +1,202 @@
+cnn classification
+EPO[1_2.3]    train: 0.686  stop:0.926  offset:  870       test:0.682:0.368
+EPO[2_2.3]    train: 0.679  stop:0.927  offset:  870       test:0.674:0.372
+EPO[3_2.3]    train: 0.668  stop:0.926  offset:  870       test:0.663:0.368
+EPO[4_2.3]    train: 0.655  stop:0.926  offset:  870       test:0.651:0.379
+EPO[5_2.3]    train: 0.640  stop:0.927  offset:  870       test:0.637:0.393
+EPO[6_2.3]    train: 0.627  stop:0.927  offset:  870       test:0.625:0.400
+EPO[7_2.3]    train: 0.615  stop:0.927  offset:  870       test:0.616:0.408
+EPO[8_2.3]    train: 0.605  stop:0.927  offset:  870       test:0.611:0.415
+EPO[9_2.3]    train: 0.602  stop:0.925  offset:  870       test:0.608:0.422
+EPO[10_2.3]   train: 0.596  stop:0.926  offset:  870       test:0.607:0.423
+
+cnn regression
+EPO[1_2.3]    train:33.222  stop:0.926  offset:  870       test:34.926:0.376
+EPO[2_2.3]    train:29.428  stop:0.927  offset:  870       test:31.554:0.374
+EPO[3_2.3]    train:27.401  stop:0.926  offset:  870       test:29.731:0.374
+EPO[4_2.3]    train:26.457  stop:0.926  offset:  870       test:28.654:0.375
+EPO[5_2.3]    train:25.987  stop:0.927  offset:  870       test:28.122:0.376
+EPO[6_2.3]    train:25.785  stop:0.927  offset:  870       test:27.775:0.393
+EPO[7_2.3]    train:25.701  stop:0.927  offset:  870       test:27.428:0.406
+EPO[8_2.3]    train:25.483  stop:0.927  offset:  870       test:26.828:0.427
+EPO[9_2.3]    train:25.333  stop:0.925  offset:  870       test:26.694:0.420
+EPO[10_2.3]   train:25.085  stop:0.926  offset:  870       test:26.054:0.437
+
+all cnn regression
+EPO[1_12.7]   train:33.665  stop:1.000  offset: 1160       test:35.021:0.373
+EPO[2_12.6]   train:29.506  stop:1.000  offset: 1160       test:31.647:0.373
+EPO[3_12.5]   train:27.457  stop:1.000  offset: 1160       test:29.796:0.373
+EPO[4_12.5]   train:26.486  stop:1.000  offset: 1160       test:28.694:0.380
+EPO[5_12.5]   train:25.999  stop:1.000  offset: 1160       test:28.142:0.380
+EPO[6_12.5]   train:25.773  stop:1.000  offset: 1160       test:27.811:0.386
+EPO[7_12.5]   train:25.648  stop:1.000  offset: 1160       test:27.605:0.385
+EPO[8_12.5]   train:25.564  stop:1.000  offset: 1160       test:27.421:0.352
+EPO[9_12.6]   train:25.507  stop:1.000  offset: 1160       test:27.336:0.357
+EPO[10_12.6]      train:25.251  stop:1.000  offset: 1160       test:27.155:0.376
+
+all cnn classification
+EPO[1_13.0]       train: 0.706  stop:1.000      offset: 1160       test:0.696:0.347
+EPO[2_12.8]       train: 0.691  stop:1.000      offset: 1160       test:0.689:0.358
+EPO[3_12.8]       train: 0.686  stop:1.000      offset: 1160       test:0.686:0.358
+EPO[4_12.7]       train: 0.682  stop:1.000      offset: 1160       test:0.684:0.342
+EPO[5_12.7]       train: 0.679  stop:1.000      offset: 1160       test:0.681:0.353
+EPO[6_12.8]       train: 0.676  stop:1.000      offset: 1160       test:0.679:0.356
+EPO[7_12.7]       train: 0.673  stop:1.000      offset: 1160       test:0.677:0.357
+EPO[8_12.7]       train: 0.670  stop:1.000      offset: 1160       test:0.675:0.371
+EPO[9_12.9]       train: 0.667  stop:1.000      offset: 1160       test:0.673:0.372
+EPO[10_12.7]      train: 0.664  stop:1.000      offset: 1160       test:0.671:0.370
+
+doc first regression
+EPO[1_2.2]    train:33.204  stop:0.926  offset:  870       test:34.925:0.372
+EPO[2_2.2]    train:29.424  stop:0.927  offset:  870       test:31.553:0.372
+EPO[3_2.2]    train:27.398  stop:0.926  offset:  870       test:29.733:0.363
+EPO[4_2.2]    train:26.452  stop:0.926  offset:  870       test:28.670:0.359
+EPO[5_2.2]    train:25.977  stop:0.927  offset:  870       test:28.157:0.363
+EPO[6_2.2]    train:25.767  stop:0.927  offset:  870       test:27.914:0.363
+EPO[7_2.2]    train:25.671  stop:0.927  offset:  870       test:27.732:0.363
+EPO[8_2.2]    train:25.587  stop:0.927  offset:  870       test:27.684:0.364
+EPO[9_2.2]    train:25.466  stop:0.925  offset:  870       test:27.471:0.362
+EPO[10_2.2]   train:25.358  stop:0.926  offset:  870       test:27.523:0.361
+
+doc first classification
+EPO[1_2.2]    train: 0.692  stop:0.926  offset:  870       test:0.691:0.384
+EPO[2_2.2]    train: 0.688  stop:0.927  offset:  870       test:0.688:0.381
+EPO[3_2.2]    train: 0.685  stop:0.926  offset:  870       test:0.686:0.382
+EPO[4_2.2]    train: 0.682  stop:0.926  offset:  870       test:0.683:0.383
+EPO[5_2.2]    train: 0.678  stop:0.927  offset:  870       test:0.681:0.367
+EPO[6_2.2]    train: 0.675  stop:0.927  offset:  870       test:0.679:0.367
+EPO[7_2.2]    train: 0.672  stop:0.927  offset:  870       test:0.677:0.367
+EPO[8_2.2]    train: 0.669  stop:0.927  offset:  870       test:0.675:0.367
+EPO[9_2.2]    train: 0.667  stop:0.925  offset:  870       test:0.673:0.368
+EPO[10_2.2]   train: 0.664  stop:0.926  offset:  870       test:0.671:0.368
+
+doc max classification
+EPO[1_2.2]    train: 0.691  stop:0.926  offset:  870       test:0.690:0.336
+EPO[2_2.2]    train: 0.687  stop:0.927  offset:  870       test:0.687:0.275
+EPO[3_2.2]    train: 0.681  stop:0.926  offset:  870       test:0.681:0.282
+EPO[4_2.2]    train: 0.672  stop:0.926  offset:  870       test:0.675:0.282
+EPO[5_2.2]    train: 0.662  stop:0.927  offset:  870       test:0.668:0.271
+EPO[6_2.2]    train: 0.652  stop:0.927  offset:  870       test:0.661:0.264
+EPO[7_2.2]    train: 0.642  stop:0.927  offset:  870       test:0.655:0.255
+EPO[8_2.2]    train: 0.632  stop:0.927  offset:  870       test:0.649:0.252
+EPO[9_2.2]    train: 0.623  stop:0.925  offset:  870       test:0.644:0.252
+EPO[10_2.2]   train: 0.614  stop:0.926  offset:  870       test:0.640:0.264
+
+doc 5 query 5 (10 vs 5) classification
+EPO[1_2.2]    train: 0.685  stop:0.926  offset:  870       test:0.683:0.305
+EPO[2_2.2]    train: 0.677  stop:0.927  offset:  870       test:0.677:0.327
+EPO[3_2.2]    train: 0.668  stop:0.926  offset:  870       test:0.669:0.345
+EPO[4_2.2]    train: 0.659  stop:0.926  offset:  870       test:0.661:0.362
+EPO[5_2.2]    train: 0.647  stop:0.927  offset:  870       test:0.651:0.379
+EPO[6_2.2]    train: 0.635  stop:0.927  offset:  870       test:0.642:0.385
+EPO[7_2.2]    train: 0.624  stop:0.927  offset:  870       test:0.634:0.381
+EPO[8_2.2]    train: 0.613  stop:0.927  offset:  870       test:0.628:0.387
+EPO[9_2.2]    train: 0.606  stop:0.925  offset:  870       test:0.624:0.381
+EPO[10_2.2]   train: 0.599  stop:0.926  offset:  870       test:0.622:0.379
+
+doc 1 query 5 classification
+EPO[1_2.3]    train: 0.680  stop:0.926  offset:  870       test:0.683:0.245
+EPO[2_2.3]    train: 0.672  stop:0.927  offset:  870       test:0.678:0.246
+EPO[3_2.3]    train: 0.663  stop:0.926  offset:  870       test:0.672:0.234
+EPO[4_2.3]    train: 0.653  stop:0.926  offset:  870       test:0.666:0.231
+EPO[5_2.3]    train: 0.643  stop:0.927  offset:  870       test:0.660:0.226
+EPO[6_2.3]    train: 0.634  stop:0.927  offset:  870       test:0.655:0.225
+EPO[7_2.3]    train: 0.626  stop:0.927  offset:  870       test:0.651:0.225
+EPO[8_2.3]    train: 0.618  stop:0.927  offset:  870       test:0.649:0.221
+EPO[9_2.3]    train: 0.613  stop:0.925  offset:  870       test:0.647:0.223
+EPO[10_2.3]   train: 0.606  stop:0.926  offset:  870       test:0.646:0.226
+
+dropout 0.5 doc 10 classification
+EPO[1_2.6]    train: 0.664  stop:0.926  offset:  870       test:0.679:0.245
+EPO[2_2.7]    train: 0.650  stop:0.927  offset:  870       test:0.669:0.277
+EPO[3_2.7]    train: 0.634  stop:0.926  offset:  870       test:0.658:0.289
+EPO[4_2.6]    train: 0.622  stop:0.926  offset:  870       test:0.651:0.292
+EPO[5_2.6]    train: 0.611  stop:0.927  offset:  870       test:0.646:0.286
+EPO[6_2.6]    train: 0.606  stop:0.927  offset:  870       test:0.643:0.287
+EPO[7_2.6]    train: 0.603  stop:0.927  offset:  870       test:0.642:0.296
+EPO[8_2.6]    train: 0.601  stop:0.927  offset:  870       test:0.641:0.294
+EPO[9_2.6]    train: 0.601  stop:0.925  offset:  870       test:0.641:0.292
+EPO[10_2.6]   train: 0.598  stop:0.926  offset:  870       test:0.641:0.296
+
+dropout 0.5 doc 10 classification (stop_gradient)
+EPO[1_2.7]    train: 0.696  stop:0.926  offset:  870       test:0.690:0.403
+EPO[2_2.7]    train: 0.689  stop:0.927  offset:  870       test:0.688:0.395
+EPO[3_2.7]    train: 0.685  stop:0.926  offset:  870       test:0.685:0.374
+EPO[4_2.7]    train: 0.682  stop:0.926  offset:  870       test:0.683:0.375
+EPO[5_2.7]    train: 0.678  stop:0.927  offset:  870       test:0.681:0.375
+EPO[6_2.7]    train: 0.675  stop:0.927  offset:  870       test:0.679:0.373
+EPO[7_2.7]    train: 0.672  stop:0.927  offset:  870       test:0.677:0.373
+EPO[8_2.7]    train: 0.669  stop:0.927  offset:  870       test:0.675:0.373
+EPO[9_2.7]    train: 0.667  stop:0.925  offset:  870       test:0.673:0.373
+EPO[10_2.7]   train: 0.664  stop:0.926  offset:  870       test:0.671:0.373
+
+EPO[1_2.4]    train: 0.694  stop:0.926  offset:  870       test:0.691:0.405
+EPO[2_2.4]    train: 0.689  stop:0.927  offset:  870       test:0.688:0.371
+EPO[3_2.3]    train: 0.685  stop:0.926  offset:  870       test:0.685:0.367
+EPO[4_2.3]    train: 0.682  stop:0.926  offset:  870       test:0.683:0.367
+EPO[5_2.3]    train: 0.678  stop:0.927  offset:  870       test:0.681:0.368
+EPO[6_2.3]    train: 0.675  stop:0.927  offset:  870       test:0.679:0.372
+EPO[7_2.3]    train: 0.672  stop:0.927  offset:  870       test:0.676:0.373
+EPO[8_2.3]    train: 0.669  stop:0.927  offset:  870       test:0.675:0.373
+EPO[9_2.3]    train: 0.667  stop:0.925  offset:  870       test:0.673:0.373
+EPO[10_2.3]   train: 0.664  stop:0.926  offset:  870       test:0.671:0.373
+
+dropout 1 doc 10 classification
+EPO[1_2.5]        train: 0.650  stop:0.926      offset:  870       test:0.661:0.269
+EPO[2_2.5]        train: 0.648  stop:0.927      offset:  870       test:0.659:0.270
+EPO[3_2.6]        train: 0.646  stop:0.926      offset:  870       test:0.658:0.273
+EPO[4_2.5]        train: 0.643  stop:0.926      offset:  870       test:0.657:0.273
+EPO[5_2.5]        train: 0.641  stop:0.927      offset:  870       test:0.655:0.272
+EPO[6_2.5]        train: 0.639  stop:0.927      offset:  870       test:0.654:0.272
+EPO[7_2.5]        train: 0.638  stop:0.927      offset:  870       test:0.653:0.272
+EPO[8_2.5]        train: 0.635  stop:0.927      offset:  870       test:0.652:0.273
+EPO[9_2.6]        train: 0.634  stop:0.925      offset:  870       test:0.651:0.272
+EPO[10_2.5]       train: 0.631  stop:0.926      offset:  870       test:0.651:0.271
+
+cnn classification (new)
+EPO[1_2.3]    train: 0.691  stop:0.926  offset:  870       test:0.690:0.308
+EPO[2_2.3]    train: 0.685  stop:0.927  offset:  870       test:0.684:0.324
+EPO[3_2.3]    train: 0.678  stop:0.926  offset:  870       test:0.678:0.372
+EPO[4_2.2]    train: 0.670  stop:0.926  offset:  870       test:0.670:0.375
+EPO[5_2.2]    train: 0.660  stop:0.927  offset:  870       test:0.661:0.410
+EPO[6_2.2]    train: 0.650  stop:0.927  offset:  870       test:0.652:0.411
+EPO[7_2.2]    train: 0.639  stop:0.927  offset:  870       test:0.641:0.422
+EPO[8_2.2]    train: 0.627  stop:0.927  offset:  870       test:0.632:0.429
+EPO[9_2.2]    train: 0.618  stop:0.925  offset:  870       test:0.624:0.420
+EPO[10_2.2]   train: 0.608  stop:0.926  offset:  870       test:0.619:0.433
+
+cnn classification (length-aware mask and order-aware pooling, stashed)
+EPO[1_2.7]    train: 0.685  stop:0.926  offset:  870       test:0.687:0.264
+EPO[2_2.6]    train: 0.678  stop:0.927  offset:  870       test:0.681:0.258
+EPO[3_2.6]    train: 0.670  stop:0.926  offset:  870       test:0.676:0.244
+EPO[4_2.6]    train: 0.661  stop:0.926  offset:  870       test:0.670:0.239
+EPO[5_2.6]    train: 0.649  stop:0.927  offset:  870       test:0.661:0.256
+EPO[6_2.6]    train: 0.636  stop:0.927  offset:  870       test:0.650:0.307
+EPO[7_2.6]    train: 0.623  stop:0.927  offset:  870       test:0.641:0.332
+EPO[8_2.6]    train: 0.611  stop:0.927  offset:  870       test:0.634:0.392
+EPO[9_2.6]    train: 0.603  stop:0.925  offset:  870       test:0.629:0.410
+EPO[10_2.6]   train: 0.596  stop:0.926  offset:  870       test:0.627:0.429
+
+dropout 0.5 doc 10 classification + cnn classification (length-aware mask and order-aware pooling)
+EPO[1_2.9]    train: 0.646  stop:0.926  offset:  870       test:0.658:0.299
+EPO[2_2.9]    train: 0.629  stop:0.927  offset:  870       test:0.643:0.334
+EPO[3_2.9]    train: 0.614  stop:0.926  offset:  870       test:0.631:0.362
+EPO[4_2.8]    train: 0.606  stop:0.926  offset:  870       test:0.624:0.380
+EPO[5_2.9]    train: 0.600  stop:0.927  offset:  870       test:0.620:0.386
+EPO[6_2.9]    train: 0.597  stop:0.927  offset:  870       test:0.617:0.417
+EPO[7_2.9]    train: 0.596  stop:0.927  offset:  870       test:0.616:0.420
+EPO[8_2.9]    train: 0.593  stop:0.927  offset:  870       test:0.615:0.431
+EPO[9_2.9]    train: 0.594  stop:0.925  offset:  870       test:0.614:0.434
+EPO[10_2.9]   train: 0.592  stop:0.926  offset:  870       test:0.614:0.440
+
+dropout 0.5 doc 10 classification + cnn classification (length-aware mask)
+EPO[1_2.8]    train: 0.636  stop:0.926  offset:  870       test:0.673:0.272
+EPO[2_2.8]    train: 0.626  stop:0.927  offset:  870       test:0.663:0.268
+EPO[3_2.8]    train: 0.617  stop:0.926  offset:  870       test:0.654:0.277
+EPO[4_2.8]    train: 0.611  stop:0.926  offset:  870       test:0.646:0.298
+EPO[5_2.8]    train: 0.605  stop:0.927  offset:  870       test:0.641:0.317
+EPO[6_2.8]    train: 0.604  stop:0.927  offset:  870       test:0.639:0.349
+EPO[7_2.8]    train: 0.602  stop:0.927  offset:  870       test:0.636:0.374
+EPO[8_2.8]    train: 0.600  stop:0.927  offset:  870       test:0.635:0.384
+EPO[9_2.8]    train: 0.600  stop:0.925  offset:  870       test:0.633:0.383
+EPO[10_2.8]   train: 0.597  stop:0.926  offset:  870       test:0.632:0.398

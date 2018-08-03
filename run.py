@@ -15,6 +15,8 @@ if __name__ == '__main__':
     parser.add_argument('--disable_gpu', help='whether to disable GPU', action='store_true')
     parser.add_argument('-d', '--data_dir', help='data directory', type=str)
     parser.add_argument('-B', '--tf_summary_path', help='path to save tf summary', type=str, default=None)
+    parser.add_argument('-s', '--save_model_path', help='path to save tf model', type=str, default=None)
+    parser.add_argument('-r', '--reuse_model_path', help='path to the model to reuse', type=str, default=None)
     args = parser.parse_args()
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
@@ -136,7 +138,7 @@ class RRI(object):
 
     def __init__(self, max_q_len, max_d_len, max_jump_step, word_vector=None, vocab=None, word_vector_trainable=True,
                  interaction='dot', glimpse='fix_hard', glimpse_fix_size=None, min_density=None, jump='max_hard',
-                 represent='sum_hard', aggregate='max', rnn_size=None, max_jump_offset=None, rel_level=2, 
+                 represent='sum_hard', separate=False, aggregate='max', rnn_size=None, max_jump_offset=None, rel_level=2, 
                  loss_func='regression', learning_rate=0.1, random_seed=0, n_epochs=100, batch_size=100, batcher=None, 
                  verbose=1, save_epochs=None, reuse_model=None, save_model=None, summary_path=None):
         self.max_q_len = max_q_len
@@ -151,6 +153,7 @@ class RRI(object):
         self.min_density = min_density
         self.jump = jump
         self.represent = represent
+        self.separate = separate
         self.aggregate = aggregate
         self.rnn_size = rnn_size
         self.max_jump_offset = max_jump_offset
@@ -174,8 +177,6 @@ class RRI(object):
             self.doc = tf.placeholder(tf.int32, shape=[None, None], name='doc') # dynamic doc length
             self.qd_size = tf.placeholder(tf.int32, shape=[None, 2], name='query_doc_size')
             self.relevance = tf.placeholder(tf.int32, shape=[None], name='relevance')
-            self.query_dpool_index = tf.placeholder(tf.int32, shape=[None, self.max_jump_offset, 2]) # dynamic query pooling index
-            self.doc_dpool_index = tf.placeholder(tf.int32, shape=[None, self.max_jump_offset, 2]) # dynamic doc pooling index
             self.word_vector_variable = tf.get_variable('word_vector', self.word_vector.shape,
                                                         initializer=tf.constant_initializer(self.word_vector),
                                                         trainable=self.word_vector_trainable)
@@ -185,9 +186,8 @@ class RRI(object):
                 rri(self.query, self.doc, tf.reverse(self.qd_size, [1]), max_jump_step=self.max_jump_step,
                     word_vector=self.word_vector_variable, interaction=self.interaction, glimpse=self.glimpse,
                     glimpse_fix_size=self.glimpse_fix_size, min_density=self.min_density, jump=self.jump,
-                    represent=self.represent, aggregate=self.aggregate, rnn_size=self.rnn_size, 
-                    max_jump_offset=self.max_jump_offset, query_dpool_index=self.query_dpool_index, 
-                    doc_dpool_index=self.doc_dpool_index, keep_prob=self.keep_prob)
+                    represent=self.represent, separate=self.separate, aggregate=self.aggregate, rnn_size=self.rnn_size, 
+                    max_jump_offset=self.max_jump_offset, keep_prob=self.keep_prob)
         if self.loss_func == 'classification':
             with vs.variable_scope('ClassificationLoss'):
                 logit_w = tf.get_variable('logit_weight', shape=[self.outputs.get_shape()[1], self.rel_level])
@@ -221,7 +221,9 @@ class RRI(object):
                     self.build_graph()
                     #scope.reuse_variables()
                     #self.build_graph_test()
-            self.session_ = tf.Session(graph=self.graph_)
+            config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)
+            #config = tf.ConfigProto()
+            self.session_ = tf.Session(graph=self.graph_, config=config)
             logging.info('load model from "{}"'.format(self.reuse_model))
             self.saver.restore(self.session_, self.reuse_model)
         if 'cnn' in self.represent and self.max_jump_offset == None:
@@ -233,11 +235,6 @@ class RRI(object):
     def feed_dict_postprocess(self, fd, is_train=True):
         feed_dict = {self.query: fd['query'], self.doc: fd['doc'], self.qd_size: fd['qd_size'],
                      self.relevance: fd['relevance']}
-        if 'cnn' in self.represent:
-            feed_dict[self.query_dpool_index] = \
-                DynamicMaxPooling.dynamic_pooling_index_1d_np(fd['qd_size'][:, 0], self.max_jump_offset)
-            feed_dict[self.doc_dpool_index] = \
-                DynamicMaxPooling.dynamic_pooling_index_1d_np(fd['qd_size'][:, 1], self.max_jump_offset)
         if is_train:
             feed_dict[self.keep_prob] = 0.5
         else:
@@ -273,6 +270,7 @@ class RRI(object):
             start = time.time()
             loss_list, com_r_list, stop_r_list, total_offset_list = [], [], [], []
             for i, fd in enumerate(self.batcher(X, y, self.batch_size, use_permutation=True)):
+                break
                 batch_size = len(fd['query'])
                 fetch = [self.rri_info['step'], self.rri_info['location'], self.rri_info['match_matrix'],
                          self.loss, self.rri_info['complete_ratio'], self.rri_info['stop_ratio'], 
@@ -288,6 +286,7 @@ class RRI(object):
                     if trace_op:
                         profiler_opts = builder(builder.time_and_memory()).order_by('micros').build()
                         tf.profiler.profile(self.graph_, run_meta=run_metadata, cmd='op', options=profiler_opts)
+                        input('press to continue')
                     if trace_graph:
                         #profiler.add_step(step=i, run_meta=run_metadata)
                         #profiler_opts_builder = builder(builder.time_and_memory())
@@ -341,7 +340,7 @@ class RRI(object):
             if self.verbose >= 1:  # output epoch stat
                 print('{:<10}\t{:>7}:{:>6.3f}\tstop:{:>5.3f}\toffset:{:>5.0f}'
                       .format('EPO[{}_{:>3.1f}]'.format(epoch, (time.time() - start) / 60),
-                              'train', np.mean(loss_list), np.mean(stop_r_list), np.mean(total_offset_list)), end='')
+                              'train', np.mean(loss_list), np.mean(stop_r_list), np.mean(total_offset_list)), end='', flush=True)
             if self.save_epochs and epoch % self.save_epochs == 0:  # save the model
                 if self.save_model:
                     self.saver.save(self.session_, self.save_model)
@@ -371,7 +370,7 @@ class RRI(object):
         self.check_params()
         if not hasattr(self, 'session_'):
             raise AttributeError('need fit or fit_iterable to be called before prediction')
-        q_list, doc_list, score_list = [], [], []
+        q_list, doc_list, score_list, loss_list = [], [], [], []
         for i, fd in enumerate(self.batcher(X, None, self.batch_size, use_permutation=False)):
             fd['relevance'] = np.ones([fd['query'].shape[0]], dtype=np.int32) * (self.rel_level - 1)
             feed_dict = self.feed_dict_postprocess(fd, is_train=False)
@@ -380,11 +379,13 @@ class RRI(object):
                     raise Exception('prediction under classification loss function with >2 \
                         relevance level is not support')
                 losses, = self.session_.run([self.losses], feed_dict=feed_dict)
+                [loss_list.append(l) for l in losses]
                 [score_list.append(-l) for l in losses]
                 [q_list.append(q) for q in fd['qid']]
                 [doc_list.append(d) for d in fd['docid']]
             elif self.loss_func == 'regression':
-                scores, = self.session_.run([self.scores], feed_dict=feed_dict)
+                scores, loss, = self.session_.run([self.scores, self.loss], feed_dict=feed_dict)
+                loss_list.append(loss)
                 [score_list.append(s) for s in scores]
                 [q_list.append(q) for q in fd['qid']]
                 [doc_list.append(d) for d in fd['docid']]
@@ -392,7 +393,7 @@ class RRI(object):
         for q, dl in groupby(sorted(zip(q_list, doc_list, score_list), key=lambda x: x[0]), lambda x: x[0]):
             dl = sorted(dl, key=lambda x: -x[2])
             ranks[q] = [d[1] for d in dl]
-        return ranks
+        return ranks, np.mean(loss_list)
 
 
 def train_test():
@@ -449,16 +450,18 @@ def train_test():
     for q in test_qd_judge:
         for d in test_qd_judge[q]:
             test_qd_judge[q][d] = relevance_mapper(test_qd_judge[q][d])
-    print('number of samples: {}'.format(sum([len(x['query']) for x in train_X])))
-    rri = RRI(max_q_len=max_q_len, max_d_len=max_d_len, max_jump_step=200, word_vector=wv.get_vectors(normalize=True),
-              vocab=vocab, word_vector_trainable=False, interaction='dot', glimpse='all_next_hard', glimpse_fix_size=10,
-              min_density=0.5, jump='min_density_hard', represent='cnn_hard', aggregate='max', rnn_size=16, 
-              max_jump_offset=max_jump_offset, rel_level=rel_level, loss_func='classification', learning_rate=0.0001, 
-              random_seed=SEED, n_epochs=10, batch_size=256, batcher=batcher, verbose=1, save_epochs=1, 
-              reuse_model=None, save_model=None, summary_path=args.tf_summary_path)
+    print('number of training samples: {}'.format(sum([len(x['query']) for x in train_X])))
+    rri = RRI(max_q_len=max_q_len, max_d_len=max_d_len, max_jump_step=100, word_vector=wv.get_vectors(normalize=True),
+              vocab=vocab, word_vector_trainable=True, interaction='dot', glimpse='all_next_hard', glimpse_fix_size=10,
+              min_density=0.5, jump='min_density_hard', represent='cnn_hard', separate=False, aggregate='max', 
+              rnn_size=16, max_jump_offset=max_jump_offset, rel_level=rel_level, loss_func='classification', 
+              learning_rate=0.0001, random_seed=SEED, n_epochs=20, batch_size=256, batcher=batcher, verbose=1, 
+              save_epochs=1, reuse_model=args.reuse_model_path, save_model=args.save_model_path, 
+              summary_path=args.tf_summary_path)
     for e in rri.fit_iterable(train_X, train_y):
         loss = rri.test(test_X, test_y)
-        ranks = rri.decision_function(test_X)
+        print(loss, flush=True)
+        ranks, _ = rri.decision_function(test_X)
         scores = evaluate(ranks, test_qd_judge, metric=ndcg, top_k=20)
         avg_score = np.mean(list(scores.values()))
         print('\t{:>7}:{:>5.3f}:{:>5.3f}'.format('test', loss, avg_score), end='', flush=True)

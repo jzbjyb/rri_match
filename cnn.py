@@ -15,10 +15,16 @@ class DynamicMaxPooling(object):
         x_expand = tf.gather_nd(x, dpool_index)
         if self.conv_dim == 1:
             size = [self.shape[0] / pool_size[0]]
-            x_pool = tf.layers.max_pooling1d(x_expand, pool_size=size, strides=size, padding=padding, name=name)
+            if size[0] != 1:
+                x_pool = tf.layers.max_pooling1d(x_expand, pool_size=size, strides=size, padding=padding, name=name)
+            else:
+                x_pool = x_expand
         elif self.conv_dim == 2:
             size = [self.shape[0] / pool_size[0], self.shape[1] / pool_size[1]]
-            x_pool = tf.layers.max_pooling2d(x_expand, pool_size=size, strides=size, padding=padding, name=name)
+            if size[0] != 1 or size[1] != 1:
+                x_pool = tf.layers.max_pooling2d(x_expand, pool_size=size, strides=size, padding=padding, name=name)
+            else:
+                x_pool = x_expand
         return x_pool
 
 
@@ -134,10 +140,10 @@ def cnn(x, architecture=[(3, 3, 1, 16), (1, 2, 2, 1)], activation='relu', dpool_
                 out = dynamic_max_pool(out, dpool_index, pool_size=pool_size, strides=pool_size, 
                                        padding='SAME', name='pool')
             else: # conventional pooling
-                if conv_dim == 1:
+                if conv_dim == 1 and pool_size[0] != 1:
                     out = tf.layers.max_pooling1d(out, pool_size=pool_size, strides=pool_size, 
                                                   padding='SAME', name='pool')
-                elif conv_dim == 2:
+                elif conv_dim == 2 and (pool_size[0] != 1 or pool_size[1] != 1):
                     out = tf.layers.max_pooling2d(out, pool_size=pool_size, strides=pool_size, 
                                                   padding='SAME', name='pool')
         last = out
