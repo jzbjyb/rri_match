@@ -172,8 +172,8 @@ def preprocess():
 
 def word_vector_transform():
     print('loading word vector ...')
-    wv = WordVector(filepath=args.word_vector_path)
-    vocab = Vocab(filepath=os.path.join(args.data_dir, 'vocab'))
+    wv = WordVector(filepath=args.word_vector_path, first_line=False)
+    vocab = Vocab(filepath=os.path.join(args.data_dir, 'vocab'), file_format='text')
     print('transforming ...')
     wv.transform(vocab.get_word_list(), oov_filepath='oov.txt')
     print('saving ...')

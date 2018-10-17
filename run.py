@@ -2,7 +2,7 @@ import argparse, logging, os, random, time
 from itertools import groupby
 import numpy as np
 from sklearn.base import BaseEstimator, ClassifierMixin
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 from utils import Vocab, WordVector, load_prep_file, load_train_test_file, printoptions, load_judge_file
 from metric import evaluate, ndcg
 from rri import rri
@@ -17,6 +17,8 @@ if __name__ == '__main__':
     parser.add_argument('-B', '--tf_summary_path', help='path to save tf summary', type=str, default=None)
     parser.add_argument('-s', '--save_model_path', help='path to save tf model', type=str, default=None)
     parser.add_argument('-r', '--reuse_model_path', help='path to the model to reuse', type=str, default=None)
+    parser.add_argument('-f', '--format', help='format of input data. \
+        "ir" for original format and "text" for new text matching format', type=str, default='ir')
     args = parser.parse_args()
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
@@ -24,7 +26,9 @@ if __name__ == '__main__':
         logging.basicConfig(level=logging.INFO)
 
 if args.disable_gpu:
-    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+    print('diable GPU')
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+
 import tensorflow as tf
 from tensorflow.python.ops import variable_scope as vs
 from tensorflow.python.profiler import model_analyzer
@@ -42,7 +46,7 @@ def data_pad(samples, max_len, dtype=None):
 
 def data_assemble(filepath, query_raw, doc_raw, max_q_len, max_d_len, relevance_mapper=None):
     relevance_mapper = relevance_mapper or (lambda x: x)
-    samples = load_train_test_file(filepath)
+    samples = load_train_test_file(filepath, file_format=args.format)
     samples_gb_q = groupby(samples, lambda x: x[0]) # queries should be sorted
     X = []
     y = []
@@ -257,6 +261,7 @@ class RRI(object):
                     #self.build_graph_test()
             config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)
             #config = tf.ConfigProto()
+            #device_count={'GPU': 0}
             self.session_ = tf.Session(graph=self.graph_, config=config)
             self.session_.run(self.init_all_vars)
         # profile
@@ -270,7 +275,6 @@ class RRI(object):
             start = time.time()
             loss_list, com_r_list, stop_r_list, total_offset_list = [], [], [], []
             for i, fd in enumerate(self.batcher(X, y, self.batch_size, use_permutation=True)):
-                break
                 batch_size = len(fd['query'])
                 fetch = [self.rri_info['step'], self.rri_info['location'], self.rri_info['match_matrix'],
                          self.loss, self.rri_info['complete_ratio'], self.rri_info['stop_ratio'], 
@@ -399,20 +403,24 @@ class RRI(object):
 def train_test():
     train_file = os.path.join(args.data_dir, 'train.prep.pointwise')
     test_file = os.path.join(args.data_dir, 'test.prep.pointwise')
-    query_file = os.path.join(args.data_dir, 'query.prep')
+    if args.format == 'ir':
+        query_file = os.path.join(args.data_dir, 'query.prep')
     doc_file = os.path.join(args.data_dir, 'docs.prep')
     w2v_file = os.path.join(args.data_dir, 'w2v')
     vocab_file = os.path.join(args.data_dir, 'vocab')
     rel_level = 2
     max_jump_offset = 50
-    max_d_len_consider = 50000
+    max_d_len_consider = 1000
     print('loading word vector ...')
     wv = WordVector(filepath=w2v_file)
-    vocab = Vocab(filepath=vocab_file)
+    vocab = Vocab(filepath=vocab_file, file_format=args.format)
     print('vocab size: {}, word vector dim: {}'.format(wv.vocab_size, wv.dim))
     print('loading query doc content ...')
-    query_raw = load_prep_file(query_file)
-    doc_raw = load_prep_file(doc_file)
+    doc_raw = load_prep_file(doc_file, file_format=args.format)
+    if args.format == 'ir':
+        query_raw = load_prep_file(query_file, file_format=args.format)
+    else:
+        query_raw = doc_raw
     print('truncate long document')
     d_long_count = 0
     for d in doc_raw:
@@ -446,7 +454,7 @@ def train_test():
     '''
     test_X, test_y, _ = data_assemble(test_file, query_raw, doc_raw, max_q_len, max_d_len, 
                                       relevance_mapper=relevance_mapper)
-    test_qd_judge = load_judge_file(test_file)
+    test_qd_judge = load_judge_file(test_file, file_format=args.format)
     for q in test_qd_judge:
         for d in test_qd_judge[q]:
             test_qd_judge[q][d] = relevance_mapper(test_qd_judge[q][d])
@@ -460,7 +468,6 @@ def train_test():
               summary_path=args.tf_summary_path)
     for e in rri.fit_iterable(train_X, train_y):
         loss = rri.test(test_X, test_y)
-        print(loss, flush=True)
         ranks, _ = rri.decision_function(test_X)
         scores = evaluate(ranks, test_qd_judge, metric=ndcg, top_k=20)
         avg_score = np.mean(list(scores.values()))

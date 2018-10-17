@@ -50,11 +50,14 @@ def load_query_log(filepath, format='bing', iterable=True):
                 yield fetch
 
 
-def load_judge_file(filepath, scale=int):
+def load_judge_file(filepath, scale=int, file_format='ir'):
     qd_judge = defaultdict(lambda: defaultdict(lambda: None))
     with open(filepath, 'r') as fp:
         for l in fp:
-            q, d, r = l.rstrip().split('\t')
+            if file_format == 'ir':
+                q, d, r = l.rstrip().split('\t')
+            elif file_format == 'text':
+                r, q, d = l.rstrip().split(' ')
             r = scale(r)
             qd_judge[q][d] = r
     return qd_judge
@@ -78,27 +81,44 @@ def load_run_file(filepath):
     return result
 
 
-def load_prep_file(filepath):
+def load_prep_file(filepath, file_format='ir'):
     result = {}
     with open(filepath, 'r') as fp:
         for l in fp:
             l = l.rstrip('\n')
             if len(l) == 0:
                 continue
-            k, ws = l.split('\t')
-            result[k] = [int(w) for w in ws.split(' ') if len(w) > 0]
+            if file_format == 'ir':
+                k, ws = l.split('\t')
+                result[k] = [int(w) for w in ws.split(' ') if len(w) > 0]
+            elif file_format == 'text':
+                ws = l.split(' ')
+                k = ws[0]
+                ws = ws[1:]
+                result[k] = [int(w) for w in ws]
+            else:
+                raise Exception()
     return result
 
 
-def load_train_test_file(filepath):
+def load_train_test_file(filepath, file_format='ir'):
     samples = []
     with open(filepath, 'r') as fp:
         for l in fp:
+            l = l.strip()
             if filepath.endswith('pointwise'):
-                q, d, r = l.split('\t')
+                if file_format == 'ir':
+                    q, d, r = l.split('\t')
+                elif file_format == 'text':
+                    r, q, d = l.split(' ')
+                else:
+                    raise Exception()
                 samples.append((q, d, int(r)))
             elif filepath.endswith('pairwise'):
-                q, d1, d2, r = l.split('\t')
+                if file_format == 'ir':
+                    q, d1, d2, r = l.split('\t')
+                else:
+                    raise Exception()
                 samples.append((q, d1, d2, float(r)))
     return samples
 
@@ -112,23 +132,32 @@ def save_train_test_file(samples, filepath):
                 fp.write('{}\t{}\t{}\t{}\n'.format(s[0], s[1], s[2], s[3]))
 
 
-def load_word_vector(filepath, is_binary=False):
+def load_word_vector(filepath, is_binary=False, first_line=True):
     if is_binary:
         raise NotImplementedError()
     words = []
     vectors = []
     with open(filepath, 'r') as fp:
-        vocab_size, dim = fp.readline().split()
-        vocab_size = int(vocab_size)
-        dim = int(dim)
-        for i in range(vocab_size):
-            rl = fp.readline().rstrip()
-            l = rl.split(' ')
-            words.append(l[0])
-            v = [float(f) for f in l[1:]]
-            if len(v) != dim:
-                raise Exception('word vector format error')
-            vectors.append(v)
+        if first_line:
+            vocab_size, dim = fp.readline().split()
+            vocab_size = int(vocab_size)
+            dim = int(dim)
+            for i in range(vocab_size):
+                rl = fp.readline().rstrip()
+                l = rl.split(' ')
+                words.append(l[0])
+                v = [float(f) for f in l[1:]]
+                if len(v) != dim:
+                    raise Exception('word vector format error')
+                vectors.append(v)
+        else:
+            for i, l in enumerate(fp):
+                if i % 100000 == 0:
+                    print(i/10000)
+                l = l.rstrip().split(' ')
+                words.append(l[0])
+                v = [float(f) for f in l[1:]]
+                vectors.append(v)
     words = np.array(words, dtype=str)
     vectors = np.array(vectors, dtype=np.float32)
     return words, vectors
@@ -219,12 +248,13 @@ def save_query_file(queries, filepath):
 
 
 class Vocab(object):
-    def __init__(self, max_size=None, filepath=None):
+    def __init__(self, max_size=None, filepath=None, file_format='ir'):
         self.UNK = '<UNK>'
         self.word2count = {}
         self.word2ind = {}
         self.vocab_size = 0
         self.max_size = max_size or sys.maxsize
+        self.file_format = file_format
         if filepath != None:
             self.load_from_file(filepath)
 
@@ -276,7 +306,12 @@ class Vocab(object):
         with open(filepath, 'r') as fp:
             ind = 0
             for l in fp:
-                w, c = l.split('\t')
+                if self.file_format == 'ir':
+                    w, c = l.split('\t')
+                elif self.file_format == 'text':
+                    w, r, c = l.split(' ')
+                else:
+                    raise Exception()
                 if not ind:
                     self.UNK = w
                 else:
@@ -288,12 +323,12 @@ class Vocab(object):
 
 
 class WordVector(object):
-    def __init__(self, filepath=None, is_binary=False, initializer='uniform'):
+    def __init__(self, filepath=None, is_binary=False, first_line=True, initializer='uniform'):
         if initializer not in {'uniform'}:
             raise Exception('initializer not supported')
         self.initializer = initializer
         if filepath != None:
-            self.raw_words, self.raw_vectors = load_word_vector(filepath, is_binary=is_binary)
+            self.raw_words, self.raw_vectors = load_word_vector(filepath, is_binary=is_binary, first_line=first_line)
         self.raw_vocab_size = len(self.raw_words)
         self.raw_words2ind = dict(zip(self.raw_words, range(self.raw_vocab_size)))
         self.dim = self.raw_vectors.shape[1]
