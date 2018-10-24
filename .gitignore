@@ -2,7 +2,9 @@ data
 Tensorboard_out
 summary
 trained_model
-
+configs
+results
+model
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

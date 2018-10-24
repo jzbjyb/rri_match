@@ -72,7 +72,8 @@ def get_jump_location(match_matrix, dq_size, location, jump, **kwargs):
         #                                  min_density=min_density)
         # there is no need to use multi-thread op, because this is fast and thus not the bottleneck
         new_location = jumper.min_density_multi_cpu(
-            match_matrix=match_matrix, dq_size=dq_size, location=location, min_density=kwargs['min_density'])
+            match_matrix=match_matrix, dq_size=dq_size, location=location, min_density=kwargs['min_density'],
+            min_jump_offset=kwargs['min_jump_offset'], use_ratio=False)
         new_location = tf.stop_gradient(new_location)
     elif jump == 'all':
         new_location = tf.stop_gradient(location)
@@ -124,8 +125,11 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
                           [ind, match_matrix, start, end, representation_ta],
                           parallel_iterations=1000)
         representation = representation_ta.stack()
-    elif represent in {'rnn_hard', 'cnn_hard'}:
-        state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, lambda: state_ta.write(0, tf.zeros([bs, 1])))
+    elif represent in {'rnn_hard', 'cnn_hard', 'interaction_cnn_hard'}:
+        if represent in {'rnn_hard', 'cnn_hard'}:
+            state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, lambda: state_ta.write(0, tf.zeros([bs, 1])))
+        elif represent in {'interaction_cnn_hard'}:
+            state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, lambda: state_ta.write(0, tf.zeros([bs, 200])))
         start = tf.cast(tf.floor(location[:, :2]), dtype=tf.int32)
         offset = tf.cast(tf.floor(location[:, 2:]), dtype=tf.int32)
         d_start, d_offset = start[:, 0], offset[:, 0]
@@ -134,7 +138,24 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
         q_region = batch_slice(query, q_start, q_offset, pad_values=0)
         d_region = tf.nn.embedding_lookup(word_vector, d_region)
         q_region = tf.nn.embedding_lookup(word_vector, q_region)
-        if represent == 'rnn_hard':
+        if represent == 'interaction_cnn_hard':
+            if 'max_jump_offset' not in kwargs or 'max_jump_offset2' not in kwargs:
+                raise ValueError('max_jump_offset and max_jump_offset2 must be set when InterCNN is used')
+            max_jump_offset = kwargs['max_jump_offset']
+            max_jump_offset2 = kwargs['max_jump_offset2']
+            local_match_matrix = tf.matmul(d_region, tf.transpose(q_region, [0, 2, 1]))
+            local_match_matrix = tf.pad(local_match_matrix, 
+                [[0, 0], [0, max_jump_offset-tf.shape(local_match_matrix)[1]], 
+                [0, max_jump_offset2-tf.shape(local_match_matrix)[2]]], 'CONSTANT', constant_values=0)
+            local_match_matrix.set_shape([None, max_jump_offset, max_jump_offset2])
+            local_match_matrix = tf.expand_dims(local_match_matrix, 3)
+            with vs.variable_scope('InterCNN'):
+                inter_dpool_index = DynamicMaxPooling.dynamic_pooling_index_2d(d_offset, q_offset, 
+                    max_jump_offset, max_jump_offset2)
+                inter_repr = cnn(local_match_matrix, architecture=[(5, 5, 1, 8), (5, 5)], activation='relu',
+                    dpool_index=inter_dpool_index)
+                representation = tf.reshape(inter_repr, [bs, -1])
+        elif represent == 'rnn_hard':
             #rnn_cell = tf.nn.rnn_cell.BasicRNNCell(kwargs['rnn_size'])
             rnn_cell = tf.nn.rnn_cell.GRUCell(kwargs['rnn_size'])
             initial_state = rnn_cell.zero_state(bs, dtype=tf.float32)
@@ -216,8 +237,8 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
 
 
 def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glimpse='fix_hard', glimpse_fix_size=None,
-        min_density=None, jump='max_hard', represent='sum_hard', separate=False, aggregate='max', rnn_size=None, 
-        max_jump_offset=None, keep_prob=1.0):
+        min_density=None, use_ratio=False, min_jump_offset=1, jump='max_hard', represent='sum_hard', separate=False, 
+        aggregate='max', rnn_size=None, max_jump_offset=None, max_jump_offset2=None, keep_prob=1.0):
     bs = tf.shape(query)[0]
     max_q_len = tf.shape(query)[1]
     max_d_len = tf.shape(doc)[1]
@@ -237,6 +258,14 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
                 match_matrix = tf.matmul(doc_emb, tf.transpose(query_emb, [0, 2, 1]))
                 match_matrix /= tf.expand_dims(tf.sqrt(tf.reduce_sum(doc_emb * doc_emb, axis=2)), axis=2) * \
                                 tf.expand_dims(tf.sqrt(tf.reduce_sum(query_emb * query_emb, axis=2)), axis=1)
+        if min_density != None:
+            if use_ratio:
+                density = tf.reduce_max(match_matrix, 2)
+                mean_density = tf.reduce_mean(density, 1)
+                max_density = tf.reduce_max(density, 1)
+                min_density = (max_density - mean_density) * min_density + mean_density
+            else:
+                min_density = tf.ones_like(dq_size[:, 0], dtype=tf.float32) * min_density
     with vs.variable_scope('SelectiveJump'):
         location_ta = tf.TensorArray(dtype=tf.float32, size=1, name='location_ta',
                                      clear_after_read=False, dynamic_size=True) # (d_ind,q_ind,d_len,q_len)
@@ -264,7 +293,8 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
                 glimpse_location = tf.where(new_stop, cur_location, glimpse_location)
                 is_stop = tf.logical_or(is_stop, new_stop)
             with vs.variable_scope('Jump'):
-                new_location = get_jump_location(match_matrix, dq_size, glimpse_location, jump, min_density=min_density)
+                new_location = get_jump_location(match_matrix, dq_size, glimpse_location, jump, 
+                    min_density=min_density, min_jump_offset=min_jump_offset)
                 if max_jump_offset != None:
                     new_location = tf.concat([new_location[:, :2],
                                               tf.minimum(new_location[:, 2:], max_jump_offset)], axis=1)
@@ -285,8 +315,8 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
                 state_ta, doc_repr_ta, query_repr_ta = \
                     get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vector, \
                                        location_one_out, represent, max_jump_offset=max_jump_offset, \
-                                       rnn_size=rnn_size, keep_prob=keep_prob, separate=separate, \
-                                       location_ta=location_ta, state_ta=state_ta, doc_repr_ta=doc_repr_ta, 
+                                       max_jump_offset2=max_jump_offset2, rnn_size=rnn_size, keep_prob=keep_prob, \
+                                       separate=separate, location_ta=location_ta, state_ta=state_ta, doc_repr_ta=doc_repr_ta, \
                                        query_repr_ta=query_repr_ta, time=time, is_stop=is_stop)
             step = step + tf.where(is_stop, tf.zeros([bs], dtype=tf.int32), tf.ones([bs], dtype=tf.int32))
             return time + 1, is_stop, step, state_ta, doc_repr_ta, query_repr_ta, location_ta, dq_size, total_offset
@@ -307,5 +337,5 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
             signal = tf.reduce_sum(states, 0) - states[-1] * \
                 tf.cast(tf.expand_dims(time - step, axis=-1), dtype=tf.float32)
         return signal, {'step': step, 'location': location, 'match_matrix': match_matrix, 
-                        'complete_ratio': complete_ratio, 'stop_ratio': stop_ratio,
+                        'complete_ratio': complete_ratio, 'is_stop': is_stop, 'stop_ratio': stop_ratio,
                         'doc_emb': doc_emb, 'total_offset': total_offset}

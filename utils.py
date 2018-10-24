@@ -50,7 +50,7 @@ def load_query_log(filepath, format='bing', iterable=True):
                 yield fetch
 
 
-def load_judge_file(filepath, scale=int, file_format='ir'):
+def load_judge_file(filepath, scale=int, file_format='ir', reverse=False):
     qd_judge = defaultdict(lambda: defaultdict(lambda: None))
     with open(filepath, 'r') as fp:
         for l in fp:
@@ -59,7 +59,10 @@ def load_judge_file(filepath, scale=int, file_format='ir'):
             elif file_format == 'text':
                 r, q, d = l.rstrip().split(' ')
             r = scale(r)
-            qd_judge[q][d] = r
+            if reverse:
+                qd_judge[d][q] = r
+            else:
+                qd_judge[q][d] = r
     return qd_judge
 
 
@@ -101,7 +104,7 @@ def load_prep_file(filepath, file_format='ir'):
     return result
 
 
-def load_train_test_file(filepath, file_format='ir'):
+def load_train_test_file(filepath, file_format='ir', reverse=False):
     samples = []
     with open(filepath, 'r') as fp:
         for l in fp:
@@ -113,7 +116,10 @@ def load_train_test_file(filepath, file_format='ir'):
                     r, q, d = l.split(' ')
                 else:
                     raise Exception()
-                samples.append((q, d, int(r)))
+                if reverse:
+                    samples.append((d, q, int(r)))
+                else:
+                    samples.append((q, d, int(r)))
             elif filepath.endswith('pairwise'):
                 if file_format == 'ir':
                     q, d1, d2, r = l.split('\t')

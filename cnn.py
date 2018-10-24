@@ -1,5 +1,5 @@
 import tensorflow as tf
-#import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 import math
 import numpy as np
 from utils import printoptions
@@ -63,6 +63,27 @@ class DynamicMaxPooling(object):
             index.append(dpool_index_(i, leng[i] // compress_ratio, cur_max_len))
         return np.array(index)
 
+    @staticmethod
+    def dynamic_pooling_index_2d(len1, len2, max_len1, max_len2, compress_ratio1=1, compress_ratio=1):
+        # TODO: don't support compress_ratio
+        batch_size = tf.shape(len1)[0]
+        # convert zeros to ones
+        len1 = len1 + (len1 == 0)
+        len2 = len2 + (len2 == 0)
+        # compute stride
+        stride1 = max_len1 / len1
+        stride2 = max_len2 / len2
+        # compute index
+        idx1 = tf.cast(tf.expand_dims(tf.range(max_len1), dim=0), dtype=tf.float64) / tf.expand_dims(stride1, dim=1)
+        idx2 = tf.cast(tf.expand_dims(tf.range(max_len2), dim=0), dtype=tf.float64) / tf.expand_dims(stride2, dim=1)
+        idx1 = tf.cast(idx1, dtype=tf.int32)
+        idx2 = tf.cast(idx2, dtype=tf.int32)
+        # mesh
+        mesh1 = tf.tile(tf.expand_dims(idx1, 2), [1, 1, max_len2])
+        mesh2 = tf.tile(tf.expand_dims(idx2, 1), [1, max_len1, 1])
+        # construct index
+        bidx = tf.ones_like(mesh1) * tf.reshape(tf.range(batch_size), [batch_size, 1, 1])
+        return tf.stack([bidx, mesh1, mesh2], axis=3)
 
     @staticmethod
     def dynamic_pooling_index_2d_np(len1, len2, max_len1, max_len2, compress_ratio1=1, compress_ratio2=1):

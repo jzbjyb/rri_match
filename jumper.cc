@@ -40,14 +40,18 @@ REGISTER_OP("MinDensityMultiCpu")
   .Input("dq_size: int32")
   .Input("location: float")
   .Input("min_density: float")
+  .Input("min_jump_offset: int32")
+  .Input("use_ratio: bool")
   .Output("next_location: float")
   .SetShapeFn([](::tensorflow::shape_inference::InferenceContext* c) {
     ::tensorflow::shape_inference::ShapeHandle input0;
     ::tensorflow::shape_inference::ShapeHandle input1;
     ::tensorflow::shape_inference::ShapeHandle input2;
+    ::tensorflow::shape_inference::ShapeHandle input3;
     TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 3, &input0));
     TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 2, &input1));
     TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 2, &input2));
+    TF_RETURN_IF_ERROR(c->WithRank(c->input(3), 1, &input3));
     c->set_output(0, c->Matrix(c->Dim(c->input(0), 0), 4));
     return Status::OK();
   });
@@ -230,8 +234,8 @@ class MinDensityMultiCpuOp : public OpKernel {
 
     static void OneTask(int64 start, int64 limit, OpKernelContext* context,
       typename TTypes<float, 3>::ConstTensor match_matrix, typename TTypes<int32, 2>::ConstTensor dq_size,
-      typename TTypes<float, 2>::ConstTensor location, float min_density,
-      typename TTypes<float, 2>::Tensor next_location) {
+      typename TTypes<float, 2>::ConstTensor location, typename TTypes<float, 1>::ConstTensor min_density, 
+      int32 min_jump_offset, bool use_ratio, typename TTypes<float, 2>::Tensor next_location) {
       for (int64 b = start; b < limit; b++) {
         const int64 d_len = dq_size(b, 0);
         const int64 q_len = dq_size(b, 1);
@@ -255,15 +259,45 @@ class MinDensityMultiCpuOp : public OpKernel {
         int* density_offset = (int*)malloc(d_offset * sizeof(int)); // region span
         int64 max_end = -1;
         int64 max_offset = -1;
+        // find the mean and maximal density
+        float mean_density = 0;
+        float max_density = std::numeric_limits<float>::min();
+        float max_density_track = 0;
+        float min_density_value = 0;
+        if (use_ratio) {
+          for (int64 i = 0; i < d_offset; i++) {
+            float cur_density = std::numeric_limits<float>::min();
+            // find the maximal similarity among all positions considered in a query
+            for (int64 j = q_start; j < q_start + q_offset; j++) {
+              if (match_matrix(b, i + d_start, j) > cur_density) cur_density = match_matrix(b, i + d_start, j);
+            }
+            density_per[i] = cur_density;
+            mean_density += cur_density;
+            // max_density with length not smaller than min_jump_offset
+            //max_density_track += cur_density;
+            //if (i >= min_jump_offset) max_density_track -= density_per[i - min_jump_offset];
+            //if (i >= min_jump_offset - 1 && max_density_track > max_density) max_density = max_density_track;
+            // pointwise max_density
+            if (cur_density > max_density) max_density = cur_density;
+          }
+          mean_density = mean_density / d_offset;
+          //max_density = mean_density / min_jump_offset;
+          OP_REQUIRES(context, max_density >= mean_density, errors::InvalidArgument("max density smaller than mean density"));
+          min_density_value = (max_density - mean_density) * min_density(b) + mean_density;
+        } else {
+          min_density_value = min_density(b);
+        }
+        //std::cout << "min_density: " << min_density_value << std::endl;
         for (int64 i = 0; i < d_offset; i++) {
           float cur_density = std::numeric_limits<float>::min();
+          // find the maximal similarity among all positions considered in a query
           for (int64 j = q_start; j < q_start + q_offset; j++) {
             if (match_matrix(b, i + d_start, j) > cur_density) cur_density = match_matrix(b, i + d_start, j);
           }
           density_per[i] = cur_density;
           if (i == 0 || density_offset[i-1] <= 0) {
             // the first position or all the previous ones are not qualified
-            if (cur_density < min_density) {
+            if (cur_density < min_density_value) {
               density[i] = cur_density;
               density_offset[i] = 0;
             } else {
@@ -271,7 +305,7 @@ class MinDensityMultiCpuOp : public OpKernel {
               float new_density = 0;
               for (int64 o = 0; o <= i; o++) {
                 new_density = (density_per[i-o] + o * new_density) / (o + 1);
-                if (new_density >= min_density) {
+                if (new_density >= min_density_value) {
                   density[i] = new_density;
                   density_offset[i] = o + 1;
                 }
@@ -279,17 +313,17 @@ class MinDensityMultiCpuOp : public OpKernel {
             }
           } else {
             // previous position is qualified
-            if (cur_density == min_density) {
+            if (cur_density == min_density_value) {
               // enlarge previous region by 1
               density_offset[i] = density_offset[i-1] + 1;
               density[i] = (density[i-1] * density_offset[i-1] + cur_density) / density_offset[i];
-            } else if (cur_density < min_density) {
+            } else if (cur_density < min_density_value) {
               // no larger region
               float new_density = (density[i-1] * density_offset[i-1] + cur_density) / (density_offset[i-1] + 1);
               density[i] = cur_density;
               density_offset[i] = 0;
               for (int64 o = i - density_offset[i-1]; o <= i - 1; o++) {
-                if (new_density >= min_density) {
+                if (new_density >= min_density_value) {
                   density[i] = new_density;
                   density_offset[i] = 1 + i - o;
                   break;
@@ -304,7 +338,7 @@ class MinDensityMultiCpuOp : public OpKernel {
               new_density = density[i];
               for (int64 o = i - density_offset[i-1] - 1; o >= 0; o--) {
                 new_density = (density_per[o] + new_density * (i - o)) / (1 + i - o);
-                if (new_density >= min_density) {
+                if (new_density >= min_density_value) {
                   density[i] = new_density;
                   density_offset[i] = 1 + i - o;
                 }
@@ -312,8 +346,9 @@ class MinDensityMultiCpuOp : public OpKernel {
             }
           }
           // terminate or continue
+          // regions smaller than min_jump_offset is not qualified
           if (density_offset[i] == 0 && max_end != -1) break;
-          else if (density_offset[i] > 0 && density_offset[i] > max_offset) {
+          else if (density_offset[i] > 0 && density_offset[i] >= min_jump_offset && density_offset[i] > max_offset) {
             max_end = i;
             max_offset = density_offset[i];
           }
@@ -351,12 +386,18 @@ class MinDensityMultiCpuOp : public OpKernel {
       const Tensor& dq_size_t = context->input(1);
       const Tensor& location_t = context->input(2);
       const Tensor& min_density_t = context->input(3);
-      OP_REQUIRES(context, TensorShapeUtils::IsScalar(min_density_t.shape()),
+      const Tensor& min_jump_offset_t = context->input(4);
+      const Tensor& use_ratio_t = context->input(5);
+      OP_REQUIRES(context, TensorShapeUtils::IsScalar(min_jump_offset_t.shape()),
+        errors::InvalidArgument("Must be a scalar"));
+      OP_REQUIRES(context, TensorShapeUtils::IsScalar(use_ratio_t.shape()),
         errors::InvalidArgument("Must be a scalar"));
       auto match_matrix = match_matrix_t.tensor<float, 3>();
       auto dq_size = dq_size_t.tensor<int32, 2>();
       auto location = location_t.tensor<float, 2>();
-      auto min_density = min_density_t.scalar<float>()();
+      auto min_density = min_density_t.tensor<float, 1>();
+      auto min_jump_offset = min_jump_offset_t.scalar<int32>()();
+      auto use_ratio = use_ratio_t.scalar<bool>()();
       const int64 batch_size = match_matrix_t.dim_size(0);
       // output
       TensorShape output_shape;
@@ -372,10 +413,11 @@ class MinDensityMultiCpuOp : public OpKernel {
                 << "num units: " << batch_size
                 << std::endl;
       */
-      Shard(worker_threads.num_threads, worker_threads.workers, batch_size, 2500,
-        [context, match_matrix, dq_size, location, min_density, next_location](int64 start, int64 limit) {
+      Shard(1, worker_threads.workers, batch_size, 2500,
+        [context, match_matrix, dq_size, location, min_density,  min_jump_offset, use_ratio, next_location]
+        (int64 start, int64 limit) {
           MinDensityMultiCpuOp::OneTask(start, limit, context, match_matrix, dq_size, location,
-            min_density, next_location);
+            min_density, min_jump_offset, use_ratio, next_location);
         });
     }
 };
