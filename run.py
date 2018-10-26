@@ -440,7 +440,7 @@ def train_test():
     w2v_file = os.path.join(args.data_dir, 'w2v')
     vocab_file = os.path.join(args.data_dir, 'vocab')
     rel_level = 2
-    max_q_len_consider = 60
+    max_q_len_consider = 10
     max_d_len_consider = 1000
     print('loading word vector ...')
     wv = WordVector(filepath=w2v_file)
@@ -500,7 +500,7 @@ def train_test():
         'interaction': 'dot', 
         'glimpse': 'all_next_hard', 
         'glimpse_fix_size': 10,
-        'min_density': 0.75, 
+        'min_density': -1, 
         'use_ratio': False, 
         'min_jump_offset': 3, 
         'jump': 'min_density_hard', 
@@ -513,11 +513,11 @@ def train_test():
         'rel_level': rel_level, 
         'loss_func': 'classification',
         'keep_prob': 1.0, 
-        'learning_rate': 0.001, 
+        'learning_rate': 0.0002, 
         'random_seed': SEED, 
-        'n_epochs': 70, 
+        'n_epochs': 30, 
         'batch_size': 256,
-        'batch_num': 50, 
+        'batch_num': 400, 
         'batcher': batcher, 
         'verbose': 1, 
         'save_epochs': 1, 
@@ -531,11 +531,15 @@ def train_test():
     for e in rri.fit_iterable(train_X, train_y):
         start = time.time()
         loss, acc = rri.test(test_X, test_y)
-        #ranks, _ = rri.decision_function(test_X)
-        #scores = evaluate(ranks, test_qd_judge, metric=ndcg, top_k=20)
-        #avg_score = np.mean(list(scores.values()))
-        print('\t{:>7}:{:>5.3f}:{:>5.3f}'
-            .format('test_{:>3.1f}'.format((time.time()-start)/60), loss, acc), end='', flush=True)
+        if args.format == 'ir':
+            ranks, _ = rri.decision_function(test_X)
+            scores = evaluate(ranks, test_qd_judge, metric=ndcg, top_k=20)
+            avg_score = np.mean(list(scores.values()))
+        elif args.format == 'text':
+            avg_score = None
+        print('\t{:>7}:{:>5.3f}:{:>5.3f}:{:>5.3f}'
+            .format('test_{:>3.1f}'.format((time.time()-start)/60), 
+                loss, acc, avg_score), end='', flush=True)
 
 
 if __name__ == '__main__':
