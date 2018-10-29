@@ -413,7 +413,7 @@ class MinDensityMultiCpuOp : public OpKernel {
                 << "num units: " << batch_size
                 << std::endl;
       */
-      Shard(1, worker_threads.workers, batch_size, 2500,
+      Shard(worker_threads.num_threads, worker_threads.workers, batch_size, 2500,
         [context, match_matrix, dq_size, location, min_density,  min_jump_offset, use_ratio, next_location]
         (int64 start, int64 limit) {
           MinDensityMultiCpuOp::OneTask(start, limit, context, match_matrix, dq_size, location,
