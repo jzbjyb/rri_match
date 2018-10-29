@@ -125,6 +125,37 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
                           [ind, match_matrix, start, end, representation_ta],
                           parallel_iterations=1000)
         representation = representation_ta.stack()
+    elif represent == 'interaction_cnn_hard_resize':
+        state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, lambda: state_ta.write(0, tf.zeros([bs, 200])))
+        # in this implementation of "interaction_cnn_hard", we don't calculate similarity matrix again
+        if 'max_jump_offset' not in kwargs or 'max_jump_offset2' not in kwargs:
+            raise ValueError('max_jump_offset and max_jump_offset2 must be set when InterCNN is used')
+        max_jump_offset = kwargs['max_jump_offset']
+        max_jump_offset2 = kwargs['max_jump_offset2']
+        start = tf.cast(tf.floor(location[:, :2]), dtype=tf.int32)
+        offset = tf.cast(tf.floor(location[:, 2:]), dtype=tf.int32)
+        d_start, d_offset = start[:, 0], offset[:, 0]
+        q_start, q_offset = start[:, 1], offset[:, 1]
+        d_end = d_start + d_offset - 1
+        q_end = q_start + q_offset - 1
+        d_start = d_start / dq_size[:, 0]
+        d_end = d_end / dq_size[:, 0]
+        q_start = q_start / dq_size[:, 1]
+        q_end = q_end / dq_size[:, 1]
+        local_match_matrix = tf.image.crop_and_resize(
+            tf.expand_dims(match_matrix, -1),
+            boxes=tf.cast(tf.stack([d_start, q_start, d_end, q_end], axis=-1), dtype=tf.float32),
+            box_ind=tf.range(bs),
+            crop_size=[max_jump_offset, max_jump_offset2],
+            method='bilinear',
+            name='local_interaction'
+        )
+        with vs.variable_scope('InterCNN'):
+            inter_repr = cnn(local_match_matrix, 
+                architecture=[(5, 5, 1, 8), (max_jump_offset/5, max_jump_offset2/5)], 
+                activation='relu',
+                dpool_index=None)
+            representation = tf.reshape(inter_repr, [bs, -1])
     elif represent in {'rnn_hard', 'cnn_hard', 'interaction_cnn_hard'}:
         if represent in {'rnn_hard', 'cnn_hard'}:
             state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, lambda: state_ta.write(0, tf.zeros([bs, 1])))
@@ -139,6 +170,7 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
         d_region = tf.nn.embedding_lookup(word_vector, d_region)
         q_region = tf.nn.embedding_lookup(word_vector, q_region)
         if represent == 'interaction_cnn_hard':
+            # this implementation seems to be slow, wo don't use it
             if 'max_jump_offset' not in kwargs or 'max_jump_offset2' not in kwargs:
                 raise ValueError('max_jump_offset and max_jump_offset2 must be set when InterCNN is used')
             max_jump_offset = kwargs['max_jump_offset']

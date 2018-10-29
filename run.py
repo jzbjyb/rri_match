@@ -14,6 +14,7 @@ if __name__ == '__main__':
     parser.add_argument('-c', '--config', help='config file', type=str, default=None)
     parser.add_argument('-D', '--debug', help='whether to use debug log level', action='store_true')
     parser.add_argument('--disable_gpu', help='whether to disable GPU', action='store_true')
+    parser.add_argument('--gpu', help='which GPU to use', type=str, default='0')
     parser.add_argument('-d', '--data_dir', help='data directory', type=str)
     parser.add_argument('-B', '--tf_summary_path', help='path to save tf summary', type=str, default=None)
     parser.add_argument('-s', '--save_model_path', help='path to save tf model', type=str, default=None)
@@ -22,12 +23,15 @@ if __name__ == '__main__':
         "ir" for original format and "text" for new text matching format', type=str, default='ir')
     parser.add_argument('--reverse', help='whether to reverse the pairs in training testing files', 
         action='store_true')
+    parser.add_argument('-p', '--paradigm', help='learning to rank paradigm', type=str, 
+        default='pointwise')
     args = parser.parse_args()
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
     else:
         logging.basicConfig(level=logging.INFO)
 
+os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 if args.disable_gpu:
     print('diable GPU')
     os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
@@ -53,71 +57,71 @@ def data_assemble(filepath, query_raw, doc_raw, max_q_len, max_d_len, relevance_
     samples_gb_q = groupby(samples, lambda x: x[0]) # queries should be sorted
     X = []
     y = []
+    def batcher(X, y=None, batch_size=128, use_permutation=True, batch_num=None):
+        rb = batch_size
+        result = {
+            'qid': [],
+            'docid': [],
+            'qd_size': [],
+            'relevance': [],
+            'query': [],
+            'doc': [],
+        }
+        query_ind = 0
+        doc_ind = 0
+        total_batch_num = 0
+        if use_permutation:
+            # permutation wrt query
+            perm = np.random.permutation(len(X))
+        else:
+            perm = list(range(len(X)))
+        while query_ind < len(X):
+            q_x = X[perm[query_ind]]
+            q_y = y[perm[query_ind]] if y != None else None
+            remain_n_sample = len(q_x['query']) - doc_ind
+            take_n_sample = min(remain_n_sample, rb)
+            for d in range(doc_ind, doc_ind + take_n_sample):
+                result['qid'].append(q_x['qid'][d])
+                result['docid'].append(q_x['docid'][d])
+                result['qd_size'].append(q_x['qd_size'][d])
+                if q_y != None:
+                    result['relevance'].append(q_y['relevance'][d])
+                result['query'].append(q_x['query'][d])
+                result['doc'].append(q_x['doc'][d])
+            rb -= take_n_sample
+            doc_ind += take_n_sample
+            if rb > 0 or doc_ind >= len(q_x['query']):
+                query_ind += 1
+                doc_ind = 0
+            if rb == 0 or (len(result['qd_size']) > 0 and query_ind >= len(X)):
+                # return batch
+                yield_result = {
+                    'qd_size': np.array(result['qd_size'], dtype=np.int32),
+                }
+                if q_y != None:
+                    yield_result['relevance'] = np.array(result['relevance'], dtype=np.int32)
+                yield_result['query'] = data_pad(result['query'], np.max(yield_result['qd_size'][:, 0]),
+                                           np.int32)
+                yield_result['doc'] = data_pad(result['doc'], np.max(yield_result['qd_size'][:, 1]), np.int32)
+                yield_result['qid'] = np.array(result['qid'], dtype=str)
+                yield_result['docid'] = np.array(result['docid'], dtype=str)
+                #print('qid: {}'.format(list(zip(range(len(result['qid'])), result['qid']))))
+                #print('docid: {}'.format(list(zip(range(len(result['docid'])), result['docid']))))
+                total_batch_num += 1
+                yield yield_result
+                if batch_num and total_batch_num >= batch_num:
+                    # end the batcher without traverse all the samples
+                    break
+                rb = batch_size
+                result = {
+                    'qid': [],
+                    'docid': [],
+                    'qd_size': [],
+                    'relevance': [],
+                    'query': [],
+                    'doc': [],
+                }
     if filepath.endswith('pointwise'):
-        def batcher(X, y=None, batch_size=128, use_permutation=True, batch_num=None):
-            rb = batch_size
-            result = {
-                'qid': [],
-                'docid': [],
-                'qd_size': [],
-                'relevance': [],
-                'query': [],
-                'doc': [],
-            }
-            query_ind = 0
-            doc_ind = 0
-            total_batch_num = 0
-            if use_permutation:
-                # permutation wrt query
-                perm = np.random.permutation(len(X))
-            else:
-                perm = list(range(len(X)))
-            while query_ind < len(X):
-                q_x = X[perm[query_ind]]
-                q_y = y[perm[query_ind]] if y != None else None
-                remain_n_sample = len(q_x['query']) - doc_ind
-                take_n_sample = min(remain_n_sample, rb)
-                for d in range(doc_ind, doc_ind + take_n_sample):
-                    result['qid'].append(q_x['qid'][d])
-                    result['docid'].append(q_x['docid'][d])
-                    result['qd_size'].append(q_x['qd_size'][d])
-                    if q_y != None:
-                        result['relevance'].append(q_y['relevance'][d])
-                    result['query'].append(q_x['query'][d])
-                    result['doc'].append(q_x['doc'][d])
-                rb -= take_n_sample
-                doc_ind += take_n_sample
-                if rb > 0 or doc_ind >= len(q_x['query']):
-                    query_ind += 1
-                    doc_ind = 0
-                if rb == 0 or (len(result['qd_size']) > 0 and query_ind >= len(X)):
-                    # return batch
-                    yield_result = {
-                        'qd_size': np.array(result['qd_size'], dtype=np.int32),
-                    }
-                    if q_y != None:
-                        yield_result['relevance'] = np.array(result['relevance'], dtype=np.int32)
-                    yield_result['query'] = data_pad(result['query'], np.max(yield_result['qd_size'][:, 0]),
-                                               np.int32)
-                    yield_result['doc'] = data_pad(result['doc'], np.max(yield_result['qd_size'][:, 1]), np.int32)
-                    yield_result['qid'] = np.array(result['qid'], dtype=str)
-                    yield_result['docid'] = np.array(result['docid'], dtype=str)
-                    #print('qid: {}'.format(list(zip(range(len(result['qid'])), result['qid']))))
-                    #print('docid: {}'.format(list(zip(range(len(result['docid'])), result['docid']))))
-                    total_batch_num += 1
-                    yield yield_result
-                    if batch_num and total_batch_num >= batch_num:
-                        # end the batcher without traverse all the samples
-                        break
-                    rb = batch_size
-                    result = {
-                        'qid': [],
-                        'docid': [],
-                        'qd_size': [],
-                        'relevance': [],
-                        'query': [],
-                        'doc': [],
-                    }
         for q, q_samples in samples_gb_q:
             q_x = {
                 'query': [],
@@ -144,6 +148,57 @@ def data_assemble(filepath, query_raw, doc_raw, max_q_len, max_d_len, relevance_
             X.append(q_x)
             y.append(q_y)
         return X, y, batcher
+    elif filepath.endswith('pairwise'):
+        for q, q_samples in samples_gb_q:
+            q_x = {
+                'query': [],
+                'doc': [],
+                'qd_size': [],
+                'max_q_len': max_q_len,
+                'max_d_len': max_d_len,
+                'qid': [],
+                'docid': [],
+            }
+            q_y = {
+                'relevance': [],
+            }
+            for s in q_samples:
+                # use max_q_len and max_d_len to filter the queries and documents
+                if s[3] == 0:
+                    # only consider pairs with difference
+                    continue
+                qm = query_raw[s[0]][:max_q_len]
+                dm1 = doc_raw[s[1]][:max_d_len]
+                dm2 = doc_raw[s[2]][:max_d_len]
+                q_x['query'].append(qm)
+                q_x['query'].append(qm)
+                q_x['qid'].append(s[0])
+                q_x['qid'].append(s[0])
+                if s[3] < 0:
+                    # only use positive pairs
+                    dm = dm1
+                    dm1 = dm2
+                    dm2 = dm
+                    q_x['docid'].append(s[2])
+                    q_x['docid'].append(s[1])
+                    q_y['relevance'].append(-s[2])
+                    q_y['relevance'].append(-s[2])
+                else:
+                    q_x['docid'].append(s[1])
+                    q_x['docid'].append(s[2])
+                    q_y['relevance'].append(s[2])
+                    q_y['relevance'].append(s[2])
+                q_x['doc'].append(dm1)
+                q_x['doc'].append(dm2)
+                q_x['qd_size'].append([len(qm), len(dm1)])
+                q_x['qd_size'].append([len(qm), len(dm2)])                
+            X.append(q_x)
+            y.append(q_y)
+            def pairwise_batcher(X, y=None, batch_size=128, use_permutation=True, batch_num=None):
+                if batch_size % 2 != 0:
+                    raise Exception('this batcher can\'t be used in pairwise approach')
+                return batcher(X, y=y, batch_size=batch_size, use_permutation=use_permutation, batch_num=batch_num)
+        return X, y, pairwise_batcher
     else:
         raise NotImplementedError()
 
@@ -227,6 +282,14 @@ class RRI(object):
                 score_b = tf.get_variable('score_bias', shape=[1], initializer=tf.constant_initializer())
                 self.scores = tf.squeeze(tf.nn.bias_add(tf.matmul(self.outputs, score_w), score_b))
                 self.loss = tf.nn.l2_loss(self.scores - tf.cast(self.relevance, dtype=tf.float32))
+        elif self.loss_func == 'pairwise_margin':
+            with vs.variable_scope('PairwiseMargin'):
+                score_w = tf.get_variable('score_weight', shape=[self.outputs.get_shape()[1], 1])
+                score_b = tf.get_variable('score_bias', shape=[1], initializer=tf.constant_initializer())
+                self.scores = tf.squeeze(tf.nn.bias_add(tf.matmul(self.outputs, score_w), score_b))
+                pairwise_scores = tf.reshape(self.scores, [-1, 2])
+                self.losses = tf.maximum(0.0, 1 - pairwise_scores[:, 0] + pairwise_scores[:, 1])
+                self.loss = tf.reduce_mean(self.losses)
         self.trainer = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(self.loss)
         self.init_all_vars = tf.global_variables_initializer()
         self.init_all_vars_local = tf.local_variables_initializer()
@@ -254,7 +317,7 @@ class RRI(object):
             self.saver.restore(self.session_, self.reuse_model)
         if 'cnn' in self.represent and self.max_jump_offset == None:
             raise ValueError('max_jump_offset must be set when cnn is used')
-        if self.loss_func not in {'classification', 'regression'}:
+        if self.loss_func not in {'classification', 'regression', 'pairwise_margin'}:
             raise ValueError('loss_func not supported')
 
 
@@ -269,7 +332,7 @@ class RRI(object):
 
 
     def fit_iterable(self, X, y=None):
-        trace_op, trace_graph = False, False
+        trace_op, trace_graph = True, False
         # check params
         self.check_params()
         # init graph and session
@@ -304,7 +367,7 @@ class RRI(object):
                          self.rri_info['total_offset'], self.trainer]
                 feed_dict = self.feed_dict_postprocess(fd, is_train=True)
                 start_time = time.time()
-                if self.summary_path != None and i % 1 == 0: # run statistics
+                if self.summary_path != None and i % 1 == 0: # run statistics                    
                     step, location, match_matrix, loss, com_r, is_stop, stop_r, total_offset, _ = \
                         self.session_.run(fetch, feed_dict=feed_dict, options=run_options, run_metadata=run_metadata)
                     end_time = time.time()
@@ -392,9 +455,12 @@ class RRI(object):
         acc_list = []
         for i, fd in enumerate(self.batcher(X, y, self.batch_size, use_permutation=False)):
             feed_dict = self.feed_dict_postprocess(fd, is_train=False)
-            loss, _, acc = self.session_.run([self.loss, self.acc_op, self.acc], feed_dict=feed_dict)
-            loss_list.append(loss)
-            acc_list.append(acc)
+            if self.loss_func in {'classification'}:
+                loss, _, acc = self.session_.run([self.loss, self.acc_op, self.acc], feed_dict=feed_dict)
+                acc_list.append(acc)
+            else:
+                loss, = self.session_.run([self.loss], feed_dict=feed_dict)
+            loss_list.append(loss)            
         return np.mean(loss_list), np.mean(acc_list)
 
 
@@ -415,7 +481,7 @@ class RRI(object):
                 [score_list.append(-l) for l in losses]
                 [q_list.append(q) for q in fd['qid']]
                 [doc_list.append(d) for d in fd['docid']]
-            elif self.loss_func == 'regression':
+            elif self.loss_func in {'regression', 'pairwise_margin'}:
                 scores, loss, = self.session_.run([self.scores, self.loss], feed_dict=feed_dict)
                 loss_list.append(loss)
                 [score_list.append(s) for s in scores]
@@ -432,8 +498,9 @@ def train_test():
     if args.config != None:
         model_config = json.load(open(args.config))
         print('model config: {}'.format(model_config))
-    train_file = os.path.join(args.data_dir, 'train.prep.pointwise')
-    test_file = os.path.join(args.data_dir, 'test.prep.pointwise')
+    train_file = os.path.join(args.data_dir, 'train.prep.{}'.format(args.paradigm))
+    test_file = os.path.join(args.data_dir, 'test.prep.{}'.format(args.paradigm))
+    test_file_judge = os.path.join(args.data_dir, 'test.prep.pointwise')
     if args.format == 'ir':
         query_file = os.path.join(args.data_dir, 'query.prep')
     doc_file = os.path.join(args.data_dir, 'docs.prep')
@@ -485,7 +552,12 @@ def train_test():
     '''
     test_X, test_y, _ = data_assemble(test_file, query_raw, doc_raw, max_q_len, max_d_len, 
                                       relevance_mapper=relevance_mapper)
-    test_qd_judge = load_judge_file(test_file, file_format=args.format, reverse=args.reverse)
+    if args.paradigm == 'pairwise':
+        test_X_judge, test_y_judge, _ = data_assemble(test_file_judge, query_raw, doc_raw, max_q_len, max_d_len, 
+                                          relevance_mapper=relevance_mapper)
+    else:
+        text_X_judge, test_y_judge = test_X, test_y
+    test_qd_judge = load_judge_file(test_file_judge, file_format=args.format, reverse=args.reverse)
     for q in test_qd_judge:
         for d in test_qd_judge[q]:
             test_qd_judge[q][d] = relevance_mapper(test_qd_judge[q][d])
@@ -525,14 +597,17 @@ def train_test():
         'save_model': args.save_model_path, 
         'summary_path': args.tf_summary_path
     }
+    if args.paradigm == 'pairwise':
+        model_config_['loss_func'] = 'pairwise_margin'
     if args.config != None:
         model_config_.update(model_config)
     rri = RRI(**model_config_)
+    train_X, train_y, test_X, test_y = train_X[:2560], train_y[:2560], test_X[:2560], test_y[:2560]
     for e in rri.fit_iterable(train_X, train_y):
         start = time.time()
         loss, acc = rri.test(test_X, test_y)
         if args.format == 'ir':
-            ranks, _ = rri.decision_function(test_X)
+            ranks, _ = rri.decision_function(test_X_judge)
             scores = evaluate(ranks, test_qd_judge, metric=ndcg, top_k=20)
             avg_score = np.mean(list(scores.values()))
         elif args.format == 'text':

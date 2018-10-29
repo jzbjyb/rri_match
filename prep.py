@@ -1,5 +1,6 @@
 import os, argparse, logging, jpype, random, gzip, shutil, zlib
 from collections import defaultdict
+from itertools import groupby
 import numpy as np
 from jpype import *
 from utils import Vocab, WordVector, load_from_html, load_from_query_file, load_train_test_file, \
@@ -20,6 +21,10 @@ if __name__ == '__main__':
     parser.add_argument('--shuqi_bing_web_dir', help='shuqi\'s html dir', type=str)
     parser.add_argument('--min_query_freq', help='minimum query frequency', type=int, default=100)
     parser.add_argument('--judgement_refer', help='judgment referred to', type=str)
+    parser.add_argument('-f', '--format', help='format of input data. \
+        "ir" for original format and "text" for new text matching format', type=str, default='ir')
+    parser.add_argument('--reverse', help='whether to reverse the pairs in training testing files', 
+        action='store_true')
     parser.add_argument('--binary_html', help='whether to read html in binary', action='store_true')
     parser.add_argument('--gzip_files', help='filepath of gzip files', type=str)
     args = parser.parse_args()
@@ -391,6 +396,22 @@ def handle_windows():
     print('total: {}'.format(count))
 
 
+def gen_pairwise():
+    train_pointwise = os.path.join(args.data_dir, 'train.prep.pointwise')
+    test_pointwise = os.path.join(args.data_dir, 'test.prep.pointwise')
+    for fn in [train_pointwise, test_pointwise]:
+        fn_out = fn.rsplit('.', 1)[0] + '.pairwise'    
+        samples = load_train_test_file(fn, file_format=args.format, reverse=args.reverse)
+        samples_gb_q = groupby(samples, lambda x: x[0])
+        with open(fn_out, 'w') as fout:
+            for q, q_samples in samples_gb_q:
+                q_samples = list(q_samples)
+                for s1 in q_samples:
+                    for s2 in q_samples:
+                        if s1[2] > s2[2]:
+                            fout.write('{}\t{}\t{}\t{}\n'.format(s1[0], s1[1], s2[1], s1[2]-s2[2]))
+
+
 if __name__ == '__main__':
     if args.action == 'prep':
         preprocess()
@@ -414,5 +435,7 @@ if __name__ == '__main__':
         ungzip()
     elif args.action == 'handle_windows':
         handle_windows()
+    elif args.action == 'gen_pairwise':
+        gen_pairwise()
     else:
         raise NotImplementedError('action not supported')
