@@ -149,6 +149,8 @@ def load_word_vector(filepath, is_binary=False, first_line=True):
             vocab_size = int(vocab_size)
             dim = int(dim)
             for i in range(vocab_size):
+                if i % 100000 == 0:
+                    print(i/10000)
                 rl = fp.readline().rstrip()
                 l = rl.split(' ')
                 words.append(l[0])

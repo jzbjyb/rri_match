@@ -191,7 +191,7 @@ def data_assemble(filepath, query_raw, doc_raw, max_q_len, max_d_len, relevance_
                 q_x['doc'].append(dm1)
                 q_x['doc'].append(dm2)
                 q_x['qd_size'].append([len(qm), len(dm1)])
-                q_x['qd_size'].append([len(qm), len(dm2)])                
+                q_x['qd_size'].append([len(qm), len(dm2)])
             X.append(q_x)
             y.append(q_y)
             def pairwise_batcher(X, y=None, batch_size=128, use_permutation=True, batch_num=None):
@@ -206,7 +206,8 @@ def data_assemble(filepath, query_raw, doc_raw, max_q_len, max_d_len, relevance_
 class RRI(object):
     INTERACTION = {'dot', 'cosine', 'indicator'}
 
-    def __init__(self, max_q_len=0, max_d_len=0, max_jump_step=0, word_vector=None, vocab=None, word_vector_trainable=True,
+    def __init__(self, max_q_len=0, max_d_len=0, max_jump_step=0, word_vector=None, oov_word_vector=None,
+                 vocab=None, word_vector_trainable=True,
                  interaction='dot', glimpse='fix_hard', glimpse_fix_size=None, min_density=None, use_ratio=False, 
                  min_jump_offset=1, jump='max_hard', represent='sum_hard', separate=False, aggregate='max', rnn_size=None, 
                  max_jump_offset=None, max_jump_offset2=None, rel_level=2, loss_func='regression', keep_prob=1.0, 
@@ -217,6 +218,7 @@ class RRI(object):
         self.max_d_len = max_d_len
         self.max_jump_step = max_jump_step
         self.word_vector = word_vector
+        self.oov_word_vector = oov_word_vector
         self.vocab = vocab
         self.word_vector_trainable = word_vector_trainable
         self.interaction = interaction
@@ -257,6 +259,10 @@ class RRI(object):
             self.word_vector_variable = tf.get_variable('word_vector', self.word_vector.shape,
                                                         initializer=tf.constant_initializer(self.word_vector),
                                                         trainable=self.word_vector_trainable)
+            if self.oov_word_vector != None:
+                print('don\'t train {} OOV word vector'.format(self.oov_word_vector))
+                self.word_vector_variable = tf.concat([self.word_vector_variable[:-self.oov_word_vector],
+                    tf.stop_gradient(self.word_vector_variable[-self.oov_word_vector:])], axis=0)
             self.keep_prob_ = tf.placeholder(tf.float32) # dropout prob
         with vs.variable_scope('Arch'):
             self.outputs, self.rri_info = \
@@ -274,8 +280,8 @@ class RRI(object):
                 logits = tf.nn.bias_add(tf.matmul(self.outputs, logit_w), logit_b)
                 self.losses = tf.nn.softmax_cross_entropy_with_logits(
                     labels=tf.one_hot(self.relevance, self.rel_level), logits=logits)
-                self.acc, self.acc_op = tf.metrics.accuracy(labels=self.relevance, predictions=tf.argmax(logits,1))
                 self.loss = tf.reduce_mean(self.losses)
+                self.acc, self.acc_op = tf.metrics.accuracy(labels=self.relevance, predictions=tf.argmax(logits,1))
         elif self.loss_func == 'regression':
             with vs.variable_scope('RegressionLoss'):
                 score_w = tf.get_variable('score_weight', shape=[self.outputs.get_shape()[1], 1])
@@ -290,6 +296,8 @@ class RRI(object):
                 pairwise_scores = tf.reshape(self.scores, [-1, 2])
                 self.losses = tf.maximum(0.0, 1 - pairwise_scores[:, 0] + pairwise_scores[:, 1])
                 self.loss = tf.reduce_mean(self.losses)
+                decision = tf.cast(pairwise_scores[:, 0] > pairwise_scores[:, 1], dtype=tf.int32)
+                self.acc, self.acc_op = tf.metrics.accuracy(labels=tf.ones_like(decision), predictions=decision)
         self.trainer = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(self.loss)
         self.init_all_vars = tf.global_variables_initializer()
         self.init_all_vars_local = tf.local_variables_initializer()
@@ -367,7 +375,7 @@ class RRI(object):
                          self.rri_info['total_offset'], self.trainer]
                 feed_dict = self.feed_dict_postprocess(fd, is_train=True)
                 start_time = time.time()
-                if self.summary_path != None and i % 1 == 0: # run statistics                    
+                if self.summary_path != None and i % 1 == 0: # run statistics
                     step, location, match_matrix, loss, com_r, is_stop, stop_r, total_offset, _ = \
                         self.session_.run(fetch, feed_dict=feed_dict, options=run_options, run_metadata=run_metadata)
                     end_time = time.time()
@@ -455,12 +463,12 @@ class RRI(object):
         acc_list = []
         for i, fd in enumerate(self.batcher(X, y, self.batch_size, use_permutation=False)):
             feed_dict = self.feed_dict_postprocess(fd, is_train=False)
-            if self.loss_func in {'classification'}:
+            if self.loss_func in {'classification', 'pairwise_margin'}:
                 loss, _, acc = self.session_.run([self.loss, self.acc_op, self.acc], feed_dict=feed_dict)
                 acc_list.append(acc)
             else:
                 loss, = self.session_.run([self.loss], feed_dict=feed_dict)
-            loss_list.append(loss)            
+            loss_list.append(loss)
         return np.mean(loss_list), np.mean(acc_list)
 
 
@@ -567,6 +575,7 @@ def train_test():
         'max_d_len': max_d_len, 
         'max_jump_step': 100, 
         'word_vector': wv.get_vectors(normalize=True),
+        'oov_word_vector': None,
         'vocab': vocab, 
         'word_vector_trainable': False,
         'interaction': 'dot', 
@@ -602,7 +611,8 @@ def train_test():
     if args.config != None:
         model_config_.update(model_config)
     rri = RRI(**model_config_)
-    train_X, train_y, test_X, test_y = train_X[:2560], train_y[:2560], test_X[:2560], test_y[:2560]
+    #train_X, train_y, test_X, test_y = train_X[:2560], train_y[:2560], test_X[:2560], test_y[:2560]
+    print('train query: {}, test query: {}'.format(len(train_X), len(test_X)))
     for e in rri.fit_iterable(train_X, train_y):
         start = time.time()
         loss, acc = rri.test(test_X, test_y)
