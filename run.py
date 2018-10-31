@@ -319,6 +319,7 @@ class RRI(object):
                     #scope.reuse_variables()
                     #self.build_graph_test()
             config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)
+            config.gpu_options.allow_growth = True
             #config = tf.ConfigProto()
             self.session_ = tf.Session(graph=self.graph_, config=config)
             logging.info('load model from "{}"'.format(self.reuse_model))
@@ -353,6 +354,7 @@ class RRI(object):
                     #scope.reuse_variables()
                     #self.build_graph_test()
             config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)
+            config.gpu_options.allow_growth = True
             #config = tf.ConfigProto()
             #device_count={'GPU': 0}
             self.session_ = tf.Session(graph=self.graph_, config=config)
