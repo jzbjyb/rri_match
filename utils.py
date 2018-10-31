@@ -345,7 +345,11 @@ class WordVector(object):
         self.vectors = np.array(self.raw_vectors)
 
 
-    def transform(self, new_words, oov_filepath=None):
+    def transform(self, new_words, oov_filepath=None, oov_at_end=False):
+        '''
+        oov_at_end determines whether the oov words are appended at the end
+        '''
+        new_words = np.array(new_words)
         start_ind = self.raw_vocab_size
         def new_inder(w):
             nonlocal start_ind
@@ -354,8 +358,12 @@ class WordVector(object):
             else:
                 start_ind += 1
                 return start_ind - 1
-        new_ind = [new_inder(w) for w in new_words]
-        self.words = np.array(new_words)
+        new_ind = np.array([new_inder(w) for w in new_words])
+        if oov_at_end:
+            ind_sorted = np.argsort(new_ind)
+            new_ind = new_ind[ind_sorted]
+            new_words = new_words[ind_sorted]
+        self.words = new_words
         logging.info('total {} words, miss {} words'
                      .format(len(new_words), start_ind - self.raw_vocab_size))
         if oov_filepath != None:
