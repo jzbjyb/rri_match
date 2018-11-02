@@ -207,7 +207,7 @@ class RRI(object):
     INTERACTION = {'dot', 'cosine', 'indicator'}
 
     def __init__(self, max_q_len=0, max_d_len=0, max_jump_step=0, word_vector=None, oov_word_vector=None,
-                 vocab=None, word_vector_trainable=True,
+                 vocab=None, word_vector_trainable=True, use_pad_word=True, 
                  interaction='dot', glimpse='fix_hard', glimpse_fix_size=None, min_density=None, use_ratio=False, 
                  min_jump_offset=1, jump='max_hard', represent='sum_hard', separate=False, aggregate='max', rnn_size=None, 
                  max_jump_offset=None, max_jump_offset2=None, rel_level=2, loss_func='regression', keep_prob=1.0, 
@@ -221,6 +221,7 @@ class RRI(object):
         self.oov_word_vector = oov_word_vector
         self.vocab = vocab
         self.word_vector_trainable = word_vector_trainable
+        self.use_pad_word = use_pad_word
         self.interaction = interaction
         self.glimpse = glimpse
         self.glimpse_fix_size = glimpse_fix_size
@@ -256,17 +257,34 @@ class RRI(object):
             self.doc = tf.placeholder(tf.int32, shape=[None, None], name='doc') # dynamic doc length
             self.qd_size = tf.placeholder(tf.int32, shape=[None, 2], name='query_doc_size')
             self.relevance = tf.placeholder(tf.int32, shape=[None], name='relevance')
+            self.keep_prob_ = tf.placeholder(tf.float32) # dropout prob
             self.word_vector_variable = tf.get_variable('word_vector', self.word_vector.shape,
                                                         initializer=tf.constant_initializer(self.word_vector),
                                                         trainable=self.word_vector_trainable)
             if self.oov_word_vector != None:
+                # Don't train OOV words which are all located at the end of the word_vector matrix.
                 print('don\'t train {} OOV word vector'.format(self.oov_word_vector))
                 self.word_vector_variable = tf.concat([self.word_vector_variable[:-self.oov_word_vector],
                     tf.stop_gradient(self.word_vector_variable[-self.oov_word_vector:])], axis=0)
-            self.keep_prob_ = tf.placeholder(tf.float32) # dropout prob
+            if self.use_pad_word:
+                # Prepend a zero embedding at the first position of word_vector_variable.
+                # Note that all the word inds need to be added 1 to be consistent with this change.
+                print('prepend a pad_word at the word vectors')
+                self.word_vector_variable = tf.concat([tf.zeros_like(self.word_vector_variable[:1]),
+                    self.word_vector_variable], axis=0)
+                bs = tf.shape(self.doc)[0]
+                max_q_len = tf.shape(self.query)[1]
+                max_d_len = tf.shape(self.doc)[1]
+                query_pad = tf.expand_dims(tf.range(max_q_len), dim=0) < self.qd_size[:, :1]
+                doc_pad = tf.expand_dims(tf.range(max_d_len), dim=0) < self.qd_size[:, 1:]
+                query = self.query + tf.cast(query_pad, dtype=tf.int32)
+                doc = self.doc + tf.cast(doc_pad, dtype=tf.int32)
+            else:
+                query = self.query
+                doc = self.doc
         with vs.variable_scope('Arch'):
             self.outputs, self.rri_info = \
-                rri(self.query, self.doc, tf.reverse(self.qd_size, [1]), max_jump_step=self.max_jump_step,
+                rri(query, doc, tf.reverse(self.qd_size, [1]), max_jump_step=self.max_jump_step,
                     word_vector=self.word_vector_variable, interaction=self.interaction, glimpse=self.glimpse,
                     glimpse_fix_size=self.glimpse_fix_size, min_density=self.min_density, use_ratio=self.use_ratio,
                     min_jump_offset=self.min_jump_offset, max_jump_offset2=self.max_jump_offset2,
@@ -437,9 +455,11 @@ class RRI(object):
                             print('qd_size: {}, step: {}, is_stop: {}, offset: {}'.format(
                                 fd['qd_size'][b], step[b], is_stop[b], total_offset[b]))
                             print('qid: {}, docid: {}'.format(fd['qid'][b], fd['docid'][b]))
-                            print(location[b])
+                            print(location[b, :step[b]+1])
                             print(np.max(match_matrix[b][:fd['qd_size'][b, 1], :fd['qd_size'][b, 0]], axis=1))
-                            input()
+                            bcont = input('break? y for yes:')
+                            if bcont == 'y':
+                                break
             if self.verbose >= 1:  # output epoch stat
                 print('{:<10}\t{:>7}:{:>6.3f}\tstop:{:>5.3f}\toffset:{:>5.1f}\tstep:{:>3.1f}'
                       .format('EPO[{}_{:>3.1f}]'.format(epoch, (time.time() - start) / 60),
@@ -590,6 +610,7 @@ def train_test():
         'oov_word_vector': None,
         'vocab': vocab, 
         'word_vector_trainable': False,
+        'use_pad_word': True, 
         'interaction': 'dot', 
         'glimpse': 'all_next_hard', 
         'glimpse_fix_size': 10,
