@@ -42,6 +42,7 @@ REGISTER_OP("MinDensityMultiCpu")
   .Input("min_density: float")
   .Input("min_jump_offset: int32")
   .Input("use_ratio: bool")
+  .Input("only_one: bool")
   .Output("next_location: float")
   .SetShapeFn([](::tensorflow::shape_inference::InferenceContext* c) {
     ::tensorflow::shape_inference::ShapeHandle input0;
@@ -235,7 +236,7 @@ class MinDensityMultiCpuOp : public OpKernel {
     static void OneTask(int64 start, int64 limit, OpKernelContext* context,
       typename TTypes<float, 3>::ConstTensor match_matrix, typename TTypes<int32, 2>::ConstTensor dq_size,
       typename TTypes<float, 2>::ConstTensor location, typename TTypes<float, 1>::ConstTensor min_density, 
-      int32 min_jump_offset, bool use_ratio, typename TTypes<float, 2>::Tensor next_location) {
+      int32 min_jump_offset, bool use_ratio, bool only_one, typename TTypes<float, 2>::Tensor next_location) {
       for (int64 b = start; b < limit; b++) {
         const int64 d_len = dq_size(b, 0);
         const int64 q_len = dq_size(b, 1);
@@ -351,6 +352,10 @@ class MinDensityMultiCpuOp : public OpKernel {
           else if (density_offset[i] > 0 && density_offset[i] >= min_jump_offset && density_offset[i] > max_offset) {
             max_end = i;
             max_offset = density_offset[i];
+            if (only_one) {
+              max_offset = 1;
+              break;
+            }
           }
         }
         // free
@@ -388,9 +393,12 @@ class MinDensityMultiCpuOp : public OpKernel {
       const Tensor& min_density_t = context->input(3);
       const Tensor& min_jump_offset_t = context->input(4);
       const Tensor& use_ratio_t = context->input(5);
+      const Tensor& only_one_t = context->input(6);
       OP_REQUIRES(context, TensorShapeUtils::IsScalar(min_jump_offset_t.shape()),
         errors::InvalidArgument("Must be a scalar"));
       OP_REQUIRES(context, TensorShapeUtils::IsScalar(use_ratio_t.shape()),
+        errors::InvalidArgument("Must be a scalar"));
+      OP_REQUIRES(context, TensorShapeUtils::IsScalar(only_one_t.shape()),
         errors::InvalidArgument("Must be a scalar"));
       auto match_matrix = match_matrix_t.tensor<float, 3>();
       auto dq_size = dq_size_t.tensor<int32, 2>();
@@ -398,6 +406,8 @@ class MinDensityMultiCpuOp : public OpKernel {
       auto min_density = min_density_t.tensor<float, 1>();
       auto min_jump_offset = min_jump_offset_t.scalar<int32>()();
       auto use_ratio = use_ratio_t.scalar<bool>()();
+      // this bool is used when we only want to find the first item >= threshold
+      auto only_one = only_one_t.scalar<bool>()();
       const int64 batch_size = match_matrix_t.dim_size(0);
       // output
       TensorShape output_shape;
@@ -414,10 +424,11 @@ class MinDensityMultiCpuOp : public OpKernel {
                 << std::endl;
       */
       Shard(worker_threads.num_threads, worker_threads.workers, batch_size, 2500,
-        [context, match_matrix, dq_size, location, min_density,  min_jump_offset, use_ratio, next_location]
+        [context, match_matrix, dq_size, location, min_density,  min_jump_offset, 
+        use_ratio, only_one, next_location]
         (int64 start, int64 limit) {
           MinDensityMultiCpuOp::OneTask(start, limit, context, match_matrix, dq_size, location,
-            min_density, min_jump_offset, use_ratio, next_location);
+            min_density, min_jump_offset, use_ratio, only_one, next_location);
         });
     }
 };

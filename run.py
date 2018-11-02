@@ -319,6 +319,7 @@ class RRI(object):
                     #scope.reuse_variables()
                     #self.build_graph_test()
             config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)
+            config.gpu_options.allow_growth = True
             #config = tf.ConfigProto()
             self.session_ = tf.Session(graph=self.graph_, config=config)
             logging.info('load model from "{}"'.format(self.reuse_model))
@@ -353,6 +354,7 @@ class RRI(object):
                     #scope.reuse_variables()
                     #self.build_graph_test()
             config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)
+            config.gpu_options.allow_growth = True
             #config = tf.ConfigProto()
             #device_count={'GPU': 0}
             self.session_ = tf.Session(graph=self.graph_, config=config)
@@ -432,13 +434,14 @@ class RRI(object):
                         continue
                     with printoptions(precision=3, suppress=True, threshold=np.nan):
                         for b in range(batch_size):
-                            print('qd_size: {}, step: {}, is_stop: {}'.format(fd['qd_size'][b], step[b], is_stop[b]))
+                            print('qd_size: {}, step: {}, is_stop: {}, offset: {}'.format(
+                                fd['qd_size'][b], step[b], is_stop[b], total_offset[b]))
                             print('qid: {}, docid: {}'.format(fd['qid'][b], fd['docid'][b]))
                             print(location[b])
-                            print(np.max(match_matrix[b][:fd['qd_size'][b, 1], :], axis=1))
+                            print(np.max(match_matrix[b][:fd['qd_size'][b, 1], :fd['qd_size'][b, 0]], axis=1))
                             input()
             if self.verbose >= 1:  # output epoch stat
-                print('{:<10}\t{:>7}:{:>6.3f}\tstop:{:>5.3f}\toffset:{:>5.0f}\tstep:{:>3.1f}'
+                print('{:<10}\t{:>7}:{:>6.3f}\tstop:{:>5.3f}\toffset:{:>5.1f}\tstep:{:>3.1f}'
                       .format('EPO[{}_{:>3.1f}]'.format(epoch, (time.time() - start) / 60),
                               'train', np.mean(loss_list), np.mean(stop_r_list), 
                               np.mean(total_offset_list), np.mean(step_list)), end='', flush=True)
@@ -529,11 +532,20 @@ def train_test():
         query_raw = doc_raw
     print('truncate long document')
     d_long_count = 0
+    avg_doc_len, avg_truncate_doc_len = 0, 0
+    truncate_len = max(max_q_len_consider, max_d_len_consider)
     for d in doc_raw:
-        if len(doc_raw[d]) > max(max_q_len_consider, max_d_len_consider):
+        avg_doc_len += len(doc_raw[d])
+        if len(doc_raw[d]) > truncate_len:
             d_long_count += 1
-            doc_raw[d] = doc_raw[d][:max_d_len_consider]
-    print('total doc: {}, long doc: {}'.format(len(doc_raw), d_long_count))
+            doc_raw[d] = doc_raw[d][:truncate_len]
+            avg_truncate_doc_len += truncate_len
+        else:
+            avg_truncate_doc_len += len(doc_raw[d])
+    avg_doc_len = avg_doc_len / len(doc_raw)
+    avg_truncate_doc_len = avg_truncate_doc_len / len(doc_raw)
+    print('total doc: {}, long doc: {}, average len: {}, average truncate len: {}'.format(
+        len(doc_raw), d_long_count, avg_doc_len, avg_truncate_doc_len))
     max_q_len = min(max_q_len_consider, max([len(query_raw[q]) for q in query_raw]))
     max_d_len = min(max_d_len_consider, max([len(doc_raw[d]) for d in doc_raw]))
     print('data assemble with max_q_len: {}, max_d_len: {} ...'.format(max_q_len, max_d_len))

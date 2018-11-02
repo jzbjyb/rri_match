@@ -73,7 +73,7 @@ def get_jump_location(match_matrix, dq_size, location, jump, **kwargs):
         # there is no need to use multi-thread op, because this is fast and thus not the bottleneck
         new_location = jumper.min_density_multi_cpu(
             match_matrix=match_matrix, dq_size=dq_size, location=location, min_density=kwargs['min_density'],
-            min_jump_offset=kwargs['min_jump_offset'], use_ratio=False)
+            min_jump_offset=kwargs['min_jump_offset'], use_ratio=False, only_one=False)
         new_location = tf.stop_gradient(new_location)
     elif jump == 'all':
         new_location = tf.stop_gradient(location)
@@ -125,9 +125,24 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
                           [ind, match_matrix, start, end, representation_ta],
                           parallel_iterations=1000)
         representation = representation_ta.stack()
+    elif represent == 'interaction_copy_hard':
+        '''
+        This represent method just copy the match_matrix selected by current region to state_ta.
+        Must guarantee that the offset of doc is the same for different step/jump. Offset on query
+        is not important because we select regions only based on location of doc.
+        Otherwise, the TensorArray will raise inconsistent shape exception.
+        '''
+        start = tf.cast(tf.floor(location[:, :2]), dtype=tf.int32)
+        offset = tf.cast(tf.floor(location[:, 2:]), dtype=tf.int32)
+        d_start, d_offset = start[:, 0], offset[:, 0]
+        local_match_matrix = batch_slice(match_matrix, d_start, d_offset, pad_values=0)
+        # initialize the first element of state_ta
+        state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, 
+            lambda: state_ta.write(0, tf.zeros_like(local_match_matrix)))
+        representation = local_match_matrix
     elif represent == 'interaction_cnn_hard_resize':
         state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, lambda: state_ta.write(0, tf.zeros([bs, 200])))
-        # in this implementation of "interaction_cnn_hard", we don't calculate similarity matrix again
+        # in this implementation of "interaction_cnn_hard_resize", we don't calculate similarity matrix again
         if 'max_jump_offset' not in kwargs or 'max_jump_offset2' not in kwargs:
             raise ValueError('max_jump_offset and max_jump_offset2 must be set when InterCNN is used')
         max_jump_offset = kwargs['max_jump_offset']
@@ -328,8 +343,16 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
                 new_location = get_jump_location(match_matrix, dq_size, glimpse_location, jump, 
                     min_density=min_density, min_jump_offset=min_jump_offset)
                 if max_jump_offset != None:
+                    # truncate long document offset
                     new_location = tf.concat([new_location[:, :2],
-                                              tf.minimum(new_location[:, 2:], max_jump_offset)], axis=1)
+                                              tf.minimum(new_location[:, 2:3], max_jump_offset), 
+                                              new_location[:, 3:]], axis=1)
+                if max_jump_offset2 != None:
+                    # truncate long query offset
+                    new_location = tf.concat([new_location[:, :2],
+                                              new_location[:, 2:3], 
+                                              tf.minimum(new_location[:, 3:], max_jump_offset2)], 
+                                              axis=1)
                 # stop when the start index overflow
                 new_stop = tf.reduce_any(new_location[:, :2] > tf.cast(dq_size - 1, tf.float32), axis=1)
                 is_stop = tf.logical_or(is_stop, new_stop)
@@ -368,6 +391,29 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
         elif aggregate == 'sum':
             signal = tf.reduce_sum(states, 0) - states[-1] * \
                 tf.cast(tf.expand_dims(time - step, axis=-1), dtype=tf.float32)
+        elif aggregate == 'interaction_concat':
+            '''
+            Concatenate all the state (local match matrix) in state_ta (without the first element 
+            because it is initialized as zeros). Then apply CNN.
+            '''
+            infered_max_d_len = max_jump_step * max_jump_offset
+            infered_max_q_len = max_jump_offset2
+            concat_match_matrix = tf.reshape(tf.transpose(states[1:], 
+                tf.concat([[1, 0], tf.range(len(states.get_shape()))[2:]], axis=0)), 
+                [bs, -1, max_q_len])
+            concat_match_matrix = tf.pad(concat_match_matrix, 
+                [[0, 0], [0, infered_max_d_len-tf.shape(concat_match_matrix)[1]], 
+                [0, infered_max_q_len-tf.shape(concat_match_matrix)[2]]], 
+                'CONSTANT', constant_values=0)
+            concat_match_matrix.set_shape([None, infered_max_d_len, infered_max_q_len])
+            concat_match_matrix = tf.expand_dims(concat_match_matrix, 3)
+            with vs.variable_scope('ConcateCNN'):
+                concat_dpool_index = DynamicMaxPooling.dynamic_pooling_index_2d(
+                    tf.cast(total_offset, tf.int32), dq_size[:, 1], 
+                    infered_max_d_len, infered_max_q_len)
+                concat_repr = cnn(concat_match_matrix, architecture=[(5, 5, 1, 8), (5, 5)], 
+                    activation='relu', dpool_index=concat_dpool_index)
+                signal = tf.reshape(concat_repr, [bs, 200])
         return signal, {'step': step, 'location': location, 'match_matrix': match_matrix, 
                         'complete_ratio': complete_ratio, 'is_stop': is_stop, 'stop_ratio': stop_ratio,
                         'doc_emb': doc_emb, 'total_offset': total_offset}
