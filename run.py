@@ -23,6 +23,8 @@ if __name__ == '__main__':
         "ir" for original format and "text" for new text matching format', type=str, default='ir')
     parser.add_argument('--reverse', help='whether to reverse the pairs in training testing files', 
         action='store_true')
+    parser.add_argument('--tfrecord', help='whether to use tfrecord as input pipeline', 
+        action='store_true')
     parser.add_argument('-p', '--paradigm', help='learning to rank paradigm', type=str, 
         default='pointwise')
     args = parser.parse_args()
@@ -211,9 +213,9 @@ class RRI(object):
                  interaction='dot', glimpse='fix_hard', glimpse_fix_size=None, min_density=None, use_ratio=False, 
                  min_jump_offset=1, jump='max_hard', represent='sum_hard', separate=False, aggregate='max', rnn_size=None, 
                  max_jump_offset=None, max_jump_offset2=None, rel_level=2, loss_func='regression', keep_prob=1.0, 
-                 learning_rate=0.1, random_seed=0, 
+                 paradigm='pointwise', learning_rate=0.1, random_seed=0, 
                  n_epochs=100, batch_size=100, batch_num=None, batcher=None, verbose=1, save_epochs=None, reuse_model=None, 
-                 save_model=None, summary_path=None):
+                 save_model=None, summary_path=None, tfrecord=False):
         self.max_q_len = max_q_len
         self.max_d_len = max_d_len
         self.max_jump_step = max_jump_step
@@ -238,6 +240,7 @@ class RRI(object):
         self.rel_level = rel_level
         self.loss_func = loss_func
         self.keep_prob = keep_prob
+        self.paradigm = paradigm
         self.learning_rate = learning_rate
         self.random_seed= random_seed
         self.n_epochs = n_epochs
@@ -249,18 +252,121 @@ class RRI(object):
         self.reuse_model = reuse_model
         self.save_model = save_model
         self.summary_path = summary_path
+        self.tfrecord = tfrecord
+
+
+    @staticmethod
+    def parse_tfexample_fn_pairwise(example_proto):
+        '''
+        Parse a pairwise record.
+        '''
+        feature_to_type = {
+            'qid': tf.FixedLenFeature([], dtype=tf.string),
+            'docid1': tf.FixedLenFeature([], dtype=tf.string),
+            'docid2': tf.FixedLenFeature([], dtype=tf.string),
+            'query': tf.VarLenFeature(dtype=tf.int64),
+            'doc1': tf.VarLenFeature(dtype=tf.int64),
+            'doc2': tf.VarLenFeature(dtype=tf.int64),
+            'qlen': tf.FixedLenFeature([1], dtype=tf.int64),
+            'doc1len': tf.FixedLenFeature([1], dtype=tf.int64),
+            'doc2len': tf.FixedLenFeature([1], dtype=tf.int64),
+            'label': tf.FixedLenFeature([1], dtype=tf.float32),
+        }
+        parsed_features = tf.parse_single_example(example_proto, feature_to_type)
+        parsed_features['query'] = tf.sparse_tensor_to_dense(parsed_features['query'])
+        parsed_features['doc1'] = tf.sparse_tensor_to_dense(parsed_features['doc1'])
+        parsed_features['doc2'] = tf.sparse_tensor_to_dense(parsed_features['doc2'])
+        query = tf.stack([parsed_features['query'], parsed_features['query']])
+        d1l = tf.shape(parsed_features['doc1'])[0]
+        d2l = tf.shape(parsed_features['doc2'])[0]
+        max_doc_len = tf.maximum(d1l, d2l)
+        doc = tf.stack([tf.pad(parsed_features['doc1'], [[0, max_doc_len-d1l]]),
+            tf.pad(parsed_features['doc2'], [[0, max_doc_len-d2l]])], axis=0)
+        qd_size1 = tf.concat([parsed_features['qlen'], parsed_features['doc1len']], axis=0)
+        qd_size2 = tf.concat([parsed_features['qlen'], parsed_features['doc2len']], axis=0)
+        qd_size = tf.stack([qd_size1, qd_size2])
+        relevance = tf.stack([parsed_features['label'], parsed_features['label']])
+        return query, doc, qd_size, relevance
+
+
+    @staticmethod
+    def parse_tfexample_fn_pointwise(example_proto):
+        '''
+        Parse a pointwise record.
+        '''
+        feature_to_type = {
+            'qid': tf.FixedLenFeature([], dtype=tf.string),
+            'docid': tf.FixedLenFeature([], dtype=tf.string),
+            'query': tf.VarLenFeature(dtype=tf.int64),
+            'doc': tf.VarLenFeature(dtype=tf.int64),
+            'qlen': tf.FixedLenFeature([1], dtype=tf.int64),
+            'doclen': tf.FixedLenFeature([1], dtype=tf.int64),
+            'label': tf.FixedLenFeature([1], dtype=tf.float32),
+        }
+        parsed_features = tf.parse_single_example(example_proto, feature_to_type)
+        parsed_features['query'] = tf.sparse_tensor_to_dense(parsed_features['query'])
+        parsed_features['doc'] = tf.sparse_tensor_to_dense(parsed_features['doc'])
+        query = parsed_features['query']
+        doc = parsed_features['doc']
+        qd_size = tf.concat([parsed_features['qlen'], parsed_features['doclen']], axis=0)
+        relevance = parsed_features['label']
+        return query, doc, qd_size, relevance
 
 
     def build_graph(self):
         with vs.variable_scope('Input'):
-            self.query = tf.placeholder(tf.int32, shape=[None, None], name='query') # dynamic query length
-            self.doc = tf.placeholder(tf.int32, shape=[None, None], name='doc') # dynamic doc length
-            self.qd_size = tf.placeholder(tf.int32, shape=[None, 2], name='query_doc_size')
-            self.relevance = tf.placeholder(tf.int32, shape=[None], name='relevance')
+            if not self.tfrecord:
+                # dynamic query length of shape (batch_size, max_q_len)
+                self.query = tf.placeholder(tf.int32, shape=[None, None], name='query')
+                # dynamic doc length of shape (batch_size, max_d_len)
+                self.doc = tf.placeholder(tf.int32, shape=[None, None], name='doc')
+                # (batch_size, 2), the first column is query length, the second is doc length
+                self.qd_size = tf.placeholder(tf.int32, shape=[None, 2], name='query_doc_size')
+                # relevance signal (only useful when using pointwise)
+                self.relevance = tf.placeholder(tf.int32, shape=[None], name='relevance')
+            else:
+                '''
+                dataset transformation function
+                '''
+                def data_transform(dataset, parse_fn, is_train=True):
+                    if is_train:
+                        dataset = dataset.shuffle(buffer_size=1)
+                        dataset = dataset.repeat()
+                    dataset = dataset.interleave(tf.data.TFRecordDataset, cycle_length=1, block_length=1)
+                    dataset = dataset.map(parse_fn, num_parallel_calls=10)
+                    dataset = dataset.prefetch(10000)
+                    if is_train:
+                        dataset = dataset.shuffle(buffer_size=1000000)
+                    dataset = dataset.padded_batch(self.batch_size, padded_shapes=dataset.output_shapes)
+                    return dataset
+                if self.paradigm == 'pointwise':
+                    parse_fn = RRI.parse_tfexample_fn_pointwise
+                elif self.paradigm == 'pairwise':
+                    parse_fn = RRI.parse_tfexample_fn_pairwise
+                else:
+                    raise Exception('not supported paradigm')
+                self.tfrecord_pattern = tf.placeholder(tf.string, shape=[], 
+                    name='tfrecord_pattern') # name pattern of the input tfrecord file
+                # train_dataset and test_dataset
+                # Differences are that shuffle is only applied to train_dataset.
+                train_dataset = tf.data.TFRecordDataset.list_files(self.tfrecord_pattern)
+                test_dataset = tf.data.TFRecordDataset.list_files(self.tfrecord_pattern)
+                train_dataset = data_transform(train_dataset, parse_fn, is_train=True)
+                test_dataset = data_transform(test_dataset, parse_fn, is_train=False)
+                dataset_iterator = tf.data.Iterator.from_structure(
+                    train_dataset.output_types, train_dataset.output_shapes)
+                self.train_data_init_op = dataset_iterator.make_initializer(train_dataset)
+                self.test_data_init_op = dataset_iterator.make_initializer(test_dataset)
+                self.query, self.doc, self.qd_size, self.relevance = dataset_iterator.get_next()
+                self.query = tf.cast(tf.reshape(self.query, [-1, tf.shape(self.query)[-1]]), dtype=tf.int32)
+                self.doc = tf.cast(tf.reshape(self.doc, [-1, tf.shape(self.doc)[-1]]), dtype=tf.int32)
+                self.qd_size = tf.cast(tf.reshape(self.qd_size, [-1, 2]), dtype=tf.int32)
+                self.relevance = tf.cast(tf.reshape(self.qd_size, [-1]), dtype=tf.int32)
             self.keep_prob_ = tf.placeholder(tf.float32) # dropout prob
+        with vs.variable_scope('InputProcessing'):
             self.word_vector_variable = tf.get_variable('word_vector', self.word_vector.shape,
-                                                        initializer=tf.constant_initializer(self.word_vector),
-                                                        trainable=self.word_vector_trainable)
+                initializer=tf.constant_initializer(self.word_vector), 
+                trainable=self.word_vector_trainable)
             if self.oov_word_vector != None:
                 # Don't train OOV words which are all located at the end of the word_vector matrix.
                 print('don\'t train {} OOV word vector'.format(self.oov_word_vector))
@@ -328,22 +434,10 @@ class RRI(object):
 
 
     def check_params(self):
-        if self.reuse_model and not hasattr(self, 'session_'):  # read model from file
-            self.graph_ = tf.Graph()
-            with self.graph_.as_default():
-                tf.set_random_seed(self.random_seed)
-                with vs.variable_scope('RRI') as scope:
-                    self.build_graph()
-                    #scope.reuse_variables()
-                    #self.build_graph_test()
-            config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)
-            config.gpu_options.allow_growth = True
-            #config = tf.ConfigProto()
-            self.session_ = tf.Session(graph=self.graph_, config=config)
-            logging.info('load model from "{}"'.format(self.reuse_model))
-            self.saver.restore(self.session_, self.reuse_model)
         if 'cnn' in self.represent and self.max_jump_offset == None:
             raise ValueError('max_jump_offset must be set when cnn is used')
+        if self.paradigm == 'pairwise':
+            self.loss_func = 'pairwise_margin'
         if self.loss_func not in {'classification', 'regression', 'pairwise_margin'}:
             raise ValueError('loss_func not supported')
 
@@ -358,6 +452,39 @@ class RRI(object):
         return feed_dict
 
 
+    def fit_iterable_tfrecord(self, train_file_pattern):
+        # check params
+        self.check_params()
+        # init graph and session
+        if not hasattr(self, 'session_'):
+            self.graph_ = tf.Graph()
+            with self.graph_.as_default():
+                tf.set_random_seed(self.random_seed)
+                with vs.variable_scope('RRI') as scope:
+                    self.build_graph()
+            config = tf.ConfigProto()
+            config.allow_soft_placement = True
+            config.log_device_placement = False
+            config.gpu_options.allow_growth = True
+            self.session_ = tf.Session(graph=self.graph_, config=config)
+            if self.reuse_model:  # read model from file
+                print('load model from "{}"'.format(self.reuse_model))
+                self.saver.restore(self.session_, self.reuse_model)
+            else: # initialize model
+                self.session_.run(self.init_all_vars)
+                self.session_.run(self.init_all_vars_local)
+        for e in range(10):
+            self.session_.run(self.train_data_init_op, feed_dict={self.tfrecord_pattern: train_file_pattern})
+            for i in range(1000000):
+                fetch = [self.rri_info['step'], self.rri_info['location'], self.rri_info['match_matrix'],
+                    self.loss, self.rri_info['complete_ratio'], self.rri_info['is_stop'], self.rri_info['stop_ratio'], 
+                    self.rri_info['total_offset'], self.trainer]
+                step, location, match_matrix, loss, com_r, is_stop, stop_r, total_offset, _ = \
+                    self.session_.run(fetch)
+                print('{} {}'.format(i, loss))
+            yield e+1
+
+
     def fit_iterable(self, X, y=None):
         trace_op, trace_graph = True, False
         # check params
@@ -369,15 +496,17 @@ class RRI(object):
                 tf.set_random_seed(self.random_seed)
                 with vs.variable_scope('RRI') as scope:
                     self.build_graph()
-                    #scope.reuse_variables()
-                    #self.build_graph_test()
-            config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)
+            config = tf.ConfigProto()
+            config.allow_soft_placement = True
+            config.log_device_placement = False
             config.gpu_options.allow_growth = True
-            #config = tf.ConfigProto()
-            #device_count={'GPU': 0}
             self.session_ = tf.Session(graph=self.graph_, config=config)
-            self.session_.run(self.init_all_vars)
-            self.session_.run(self.init_all_vars_local)
+            if self.reuse_model:  # read model from file
+                print('load model from "{}"'.format(self.reuse_model))
+                self.saver.restore(self.session_, self.reuse_model)
+            else: # initialize model
+                self.session_.run(self.init_all_vars)
+                self.session_.run(self.init_all_vars_local)
         # profile
         builder = option_builder.ProfileOptionBuilder
         #profiler = model_analyzer.Profiler(graph=self.graph_)
@@ -526,82 +655,106 @@ class RRI(object):
 
 
 def train_test():
-    if args.config != None:
-        model_config = json.load(open(args.config))
-        print('model config: {}'.format(model_config))
-    train_file = os.path.join(args.data_dir, 'train.prep.{}'.format(args.paradigm))
-    test_file = os.path.join(args.data_dir, 'test.prep.{}'.format(args.paradigm))
-    test_file_judge = os.path.join(args.data_dir, 'test.prep.pointwise')
-    if args.format == 'ir':
-        query_file = os.path.join(args.data_dir, 'query.prep')
-    doc_file = os.path.join(args.data_dir, 'docs.prep')
-    w2v_file = os.path.join(args.data_dir, 'w2v')
-    vocab_file = os.path.join(args.data_dir, 'vocab')
+    '''
+    load config
+    '''
     rel_level = 2
     max_q_len_consider = 10
     max_d_len_consider = 1000
+    if args.config != None:
+        model_config = json.load(open(args.config))
+        print('model config: {}'.format(model_config))
+    '''
+    load word vector
+    '''
+    w2v_file = os.path.join(args.data_dir, 'w2v')
+    vocab_file = os.path.join(args.data_dir, 'vocab')
     print('loading word vector ...')
     wv = WordVector(filepath=w2v_file)
     vocab = Vocab(filepath=vocab_file, file_format=args.format)
     print('vocab size: {}, word vector dim: {}'.format(wv.vocab_size, wv.dim))
-    print('loading query doc content ...')
-    doc_raw = load_prep_file(doc_file, file_format=args.format)
-    if args.format == 'ir':
-        query_raw = load_prep_file(query_file, file_format=args.format)
-    else:
-        query_raw = doc_raw
-    print('truncate long document')
-    d_long_count = 0
-    avg_doc_len, avg_truncate_doc_len = 0, 0
-    truncate_len = max(max_q_len_consider, max_d_len_consider)
-    for d in doc_raw:
-        avg_doc_len += len(doc_raw[d])
-        if len(doc_raw[d]) > truncate_len:
-            d_long_count += 1
-            doc_raw[d] = doc_raw[d][:truncate_len]
-            avg_truncate_doc_len += truncate_len
+    if not args.tfrecord:
+        '''
+        load data (placeholder)
+        '''
+        train_file = os.path.join(args.data_dir, 'train.prep.{}'.format(args.paradigm))
+        test_file = os.path.join(args.data_dir, 'test.prep.{}'.format(args.paradigm))
+        test_file_judge = os.path.join(args.data_dir, 'test.prep.pointwise')
+        doc_file = os.path.join(args.data_dir, 'docs.prep')
+        if args.format == 'ir':
+            query_file = os.path.join(args.data_dir, 'query.prep')
+        print('loading query doc content ...')
+        doc_raw = load_prep_file(doc_file, file_format=args.format)
+        if args.format == 'ir':
+            query_raw = load_prep_file(query_file, file_format=args.format)
         else:
-            avg_truncate_doc_len += len(doc_raw[d])
-    avg_doc_len = avg_doc_len / len(doc_raw)
-    avg_truncate_doc_len = avg_truncate_doc_len / len(doc_raw)
-    print('total doc: {}, long doc: {}, average len: {}, average truncate len: {}'.format(
-        len(doc_raw), d_long_count, avg_doc_len, avg_truncate_doc_len))
-    max_q_len = min(max_q_len_consider, max([len(query_raw[q]) for q in query_raw]))
-    max_d_len = min(max_d_len_consider, max([len(doc_raw[d]) for d in doc_raw]))
-    print('data assemble with max_q_len: {}, max_d_len: {} ...'.format(max_q_len, max_d_len))
-    def relevance_mapper(r):
-        if r < 0:
-            return 0
-        if r >= rel_level:
-            return rel_level - 1
-        return r
-    train_X, train_y, batcher = data_assemble(train_file, query_raw, doc_raw, max_q_len, max_d_len, 
-                                              relevance_mapper=relevance_mapper)
-    '''
-    doc_len_list = []
-    for q_x in train_X:
-        for d in q_x['qd_size']:
-            doc_len_list.append(d[1])
-    doc_len_list = np.array(doc_len_list, dtype=np.int32)
-    doc_len_list = [min(max_jump_offset ** 2 / d, max_jump_offset) for d in doc_len_list]
-    plt.hist(doc_len_list, bins=max_jump_offset)
-    plt.xlim(xmin=0, xmax=max_jump_offset)
-    plt.xlabel('preserve number')
-    plt.ylabel('number')
-    plt.show()
-    '''
-    test_X, test_y, _ = data_assemble(test_file, query_raw, doc_raw, max_q_len, max_d_len, 
-                                      relevance_mapper=relevance_mapper)
-    if args.paradigm == 'pairwise':
-        test_X_judge, test_y_judge, _ = data_assemble(test_file_judge, query_raw, doc_raw, max_q_len, max_d_len, 
+            query_raw = doc_raw
+        print('truncate long document')
+        d_long_count = 0
+        avg_doc_len, avg_truncate_doc_len = 0, 0
+        truncate_len = max(max_q_len_consider, max_d_len_consider)
+        for d in doc_raw:
+            avg_doc_len += len(doc_raw[d])
+            if len(doc_raw[d]) > truncate_len:
+                d_long_count += 1
+                doc_raw[d] = doc_raw[d][:truncate_len]
+                avg_truncate_doc_len += truncate_len
+            else:
+                avg_truncate_doc_len += len(doc_raw[d])
+        avg_doc_len = avg_doc_len / len(doc_raw)
+        avg_truncate_doc_len = avg_truncate_doc_len / len(doc_raw)
+        print('total doc: {}, long doc: {}, average len: {}, average truncate len: {}'.format(
+            len(doc_raw), d_long_count, avg_doc_len, avg_truncate_doc_len))
+        max_q_len = min(max_q_len_consider, max([len(query_raw[q]) for q in query_raw]))
+        max_d_len = min(max_d_len_consider, max([len(doc_raw[d]) for d in doc_raw]))
+        print('data assemble with max_q_len: {}, max_d_len: {} ...'.format(max_q_len, max_d_len))
+        def relevance_mapper(r):
+            if r < 0:
+                return 0
+            if r >= rel_level:
+                return rel_level - 1
+            return r
+        train_X, train_y, batcher = data_assemble(train_file, query_raw, doc_raw, max_q_len, max_d_len, 
+                                                  relevance_mapper=relevance_mapper)
+        '''
+        doc_len_list = []
+        for q_x in train_X:
+            for d in q_x['qd_size']:
+                doc_len_list.append(d[1])
+        doc_len_list = np.array(doc_len_list, dtype=np.int32)
+        doc_len_list = [min(max_jump_offset ** 2 / d, max_jump_offset) for d in doc_len_list]
+        plt.hist(doc_len_list, bins=max_jump_offset)
+        plt.xlim(xmin=0, xmax=max_jump_offset)
+        plt.xlabel('preserve number')
+        plt.ylabel('number')
+        plt.show()
+        '''
+        test_X, test_y, _ = data_assemble(test_file, query_raw, doc_raw, max_q_len, max_d_len, 
                                           relevance_mapper=relevance_mapper)
+        if args.paradigm == 'pairwise':
+            test_X_judge, test_y_judge, _ = data_assemble(test_file_judge, query_raw, doc_raw, max_q_len, max_d_len, 
+                                              relevance_mapper=relevance_mapper)
+        else:
+            text_X_judge, test_y_judge = test_X, test_y
+        print('number of training samples: {}'.format(sum([len(x['query']) for x in train_X])))
+        '''
+        load judge file
+        '''
+        test_qd_judge = load_judge_file(test_file_judge, file_format=args.format, reverse=args.reverse)
+        for q in test_qd_judge:
+            for d in test_qd_judge[q]:
+                test_qd_judge[q][d] = relevance_mapper(test_qd_judge[q][d])
     else:
-        text_X_judge, test_y_judge = test_X, test_y
-    test_qd_judge = load_judge_file(test_file_judge, file_format=args.format, reverse=args.reverse)
-    for q in test_qd_judge:
-        for d in test_qd_judge[q]:
-            test_qd_judge[q][d] = relevance_mapper(test_qd_judge[q][d])
-    print('number of training samples: {}'.format(sum([len(x['query']) for x in train_X])))
+        '''
+        load data (tfrecord)
+        '''
+        max_q_len = max_q_len_consider
+        max_d_len = max_d_len_consider
+        batcher = None
+
+    '''
+    train and test the model
+    '''
     model_config_ = {
         'max_q_len': max_q_len, 
         'max_d_len': max_d_len, 
@@ -627,6 +780,7 @@ def train_test():
         'rel_level': rel_level, 
         'loss_func': 'classification',
         'keep_prob': 1.0, 
+        'paradigm': args.paradigm,
         'learning_rate': 0.0002, 
         'random_seed': SEED, 
         'n_epochs': 30, 
@@ -637,13 +791,13 @@ def train_test():
         'save_epochs': 1, 
         'reuse_model': args.reuse_model_path, 
         'save_model': args.save_model_path, 
-        'summary_path': args.tf_summary_path
+        'summary_path': args.tf_summary_path,
+        'tfrecord': args.tfrecord,
     }
-    if args.paradigm == 'pairwise':
-        model_config_['loss_func'] = 'pairwise_margin'
     if args.config != None:
         model_config_.update(model_config)
     rri = RRI(**model_config_)
+    
     #train_X, train_y, test_X, test_y = train_X[:2560], train_y[:2560], test_X[:2560], test_y[:2560]
     print('train query: {}, test query: {}'.format(len(train_X), len(test_X)))
     for e in rri.fit_iterable(train_X, train_y):
@@ -658,7 +812,11 @@ def train_test():
         print('\t{:>7}:{:>5.3f}:{:>5.3f}:{:>5.3f}'
             .format('test_{:>3.1f}'.format((time.time()-start)/60), 
                 loss, acc, avg_score), end='', flush=True)
-
+    '''
+    for e in rri.fit_iterable_tfrecord('data/bing/test.prep.pairwise.tfrecord-???-of-???'):
+        print(e)
+        input()
+    '''
 
 if __name__ == '__main__':
     if args.action == 'train_test':
