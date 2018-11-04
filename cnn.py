@@ -1,4 +1,5 @@
 import tensorflow as tf
+from tensorflow.python.ops import variable_scope as vs
 import matplotlib.pyplot as plt
 import math
 import numpy as np
@@ -136,7 +137,7 @@ def cnn(x, architecture=[(3, 3, 1, 16), (1, 2, 2, 1)], activation='relu', dpool_
         layer = i + 1
         conv_size = architecture[i*2]
         pool_size = architecture[i*2+1]
-        with tf.name_scope('conv{}'.format(layer)) as scope:
+        with vs.variable_scope('conv{}'.format(layer)):
             #kernel = tf.Variable(tf.truncated_normal(conv_size, dtype=tf.float32, stddev=1e-1), name='weights')
             kernel = tf.get_variable('weights', shape=conv_size, dtype=tf.float32, initializer=\
                                      tf.truncated_normal_initializer(mean=0.0, stddev=1e-1, dtype=tf.float32))
@@ -151,11 +152,11 @@ def cnn(x, architecture=[(3, 3, 1, 16), (1, 2, 2, 1)], activation='relu', dpool_
                                      tf.zeros_initializer())
             out = tf.nn.bias_add(conv, biases)
             if activation == 'relu':
-                out = tf.nn.relu(out, name=scope)
+                out = tf.nn.relu(out)
             elif activation == 'tanh':
-                out = tf.nn.tanh(out, name=scope)
+                out = tf.nn.tanh(out)
             tf.add_to_collection('feature_map', out)
-        with tf.name_scope('pool{}'.format(layer)) as scope:
+        with vs.variable_scope('pool{}'.format(layer)):
             if dpool_index is not None and layer == 1: # dynamic pooling
                 dynamic_max_pool = DynamicMaxPooling(dim=conv_dim, shape=shape)
                 out = dynamic_max_pool(out, dpool_index, pool_size=pool_size, strides=pool_size, 

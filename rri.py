@@ -200,6 +200,7 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
                 inter_dpool_index = DynamicMaxPooling.dynamic_pooling_index_2d(d_offset, q_offset, 
                     max_jump_offset, max_jump_offset2)
                 inter_repr = cnn(local_match_matrix, architecture=[(5, 5, 1, 8), (5, 5)], activation='relu',
+                #inter_repr = cnn(local_match_matrix, architecture=[(5, 5, 1, 16), (500, 10), (5, 5, 16, 16), (1, 1), (5, 5, 16, 16), (10, 1), (5, 5, 16, 100), (25, 10)], activation='relu',
                     dpool_index=inter_dpool_index)
                 representation = tf.reshape(inter_repr, [bs, -1])
         elif represent == 'rnn_hard':

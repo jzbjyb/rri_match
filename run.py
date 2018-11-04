@@ -1,4 +1,4 @@
-import argparse, logging, os, random, time, json
+import argparse, logging, os, random, time, json, functools
 from itertools import groupby
 import numpy as np
 from sklearn.base import BaseEstimator, ClassifierMixin
@@ -77,6 +77,7 @@ def data_assemble(filepath, query_raw, doc_raw, max_q_len, max_d_len, relevance_
             perm = np.random.permutation(len(X))
         else:
             perm = list(range(len(X)))
+        start_time = time.time()
         while query_ind < len(X):
             q_x = X[perm[query_ind]]
             q_y = y[perm[query_ind]] if y != None else None
@@ -110,7 +111,8 @@ def data_assemble(filepath, query_raw, doc_raw, max_q_len, max_d_len, relevance_
                 #print('qid: {}'.format(list(zip(range(len(result['qid'])), result['qid']))))
                 #print('docid: {}'.format(list(zip(range(len(result['docid'])), result['docid']))))
                 total_batch_num += 1
-                yield yield_result
+                yield yield_result, time.time() - start_time
+                start_time = time.time()
                 if batch_num and total_batch_num >= batch_num:
                     # end the batcher without traverse all the samples
                     break
@@ -256,7 +258,7 @@ class RRI(object):
 
 
     @staticmethod
-    def parse_tfexample_fn_pairwise(example_proto):
+    def parse_tfexample_fn_pairwise(example_proto, max_q_len, max_d_len):
         '''
         Parse a pairwise record.
         '''
@@ -286,11 +288,14 @@ class RRI(object):
         qd_size2 = tf.concat([parsed_features['qlen'], parsed_features['doc2len']], axis=0)
         qd_size = tf.stack([qd_size1, qd_size2])
         relevance = tf.stack([parsed_features['label'], parsed_features['label']])
+        query = query[:, :max_q_len]
+        doc = doc[:, :max_d_len]
+        qd_size = tf.minimum(qd_size, [[max_q_len, max_d_len]])
         return query, doc, qd_size, relevance
 
 
     @staticmethod
-    def parse_tfexample_fn_pointwise(example_proto):
+    def parse_tfexample_fn_pointwise(example_proto, max_q_len, max_d_len):
         '''
         Parse a pointwise record.
         '''
@@ -310,6 +315,9 @@ class RRI(object):
         doc = parsed_features['doc']
         qd_size = tf.concat([parsed_features['qlen'], parsed_features['doclen']], axis=0)
         relevance = parsed_features['label']
+        query = query[:max_q_len]
+        doc = doc[:max_d_len]
+        qd_size = tf.maximum(qd_size, [max_q_len, max_d_len])
         return query, doc, qd_size, relevance
 
 
@@ -333,10 +341,11 @@ class RRI(object):
                         dataset = dataset.shuffle(buffer_size=1)
                         dataset = dataset.repeat()
                     dataset = dataset.interleave(tf.data.TFRecordDataset, cycle_length=1, block_length=1)
-                    dataset = dataset.map(parse_fn, num_parallel_calls=10)
-                    dataset = dataset.prefetch(10000)
+                    dataset = dataset.map(functools.partial(parse_fn, 
+                        max_q_len=self.max_q_len, max_d_len=self.max_d_len), num_parallel_calls=4)
+                    dataset = dataset.prefetch(256)
                     if is_train:
-                        dataset = dataset.shuffle(buffer_size=1000000)
+                        dataset = dataset.shuffle(buffer_size=1)
                     dataset = dataset.padded_batch(self.batch_size, padded_shapes=dataset.output_shapes)
                     return dataset
                 if self.paradigm == 'pointwise':
@@ -516,8 +525,10 @@ class RRI(object):
         for epoch in range(self.n_epochs):
             epoch += 1
             start = time.time()
+            feed_time_all = 0
             loss_list, com_r_list, stop_r_list, total_offset_list, step_list = [], [], [], [], []
-            for i, fd in enumerate(self.batcher(X, y, self.batch_size, use_permutation=True, batch_num=self.batch_num)):
+            for i, (fd, feed_time) in enumerate(self.batcher(X, y, self.batch_size, use_permutation=True, batch_num=self.batch_num)):
+                feed_time_all += feed_time
                 batch_size = len(fd['query'])
                 fetch = [self.rri_info['step'], self.rri_info['location'], self.rri_info['match_matrix'],
                          self.loss, self.rri_info['complete_ratio'], self.rri_info['is_stop'], self.rri_info['stop_ratio'], 
@@ -591,7 +602,7 @@ class RRI(object):
                                 break
             if self.verbose >= 1:  # output epoch stat
                 print('{:<10}\t{:>7}:{:>6.3f}\tstop:{:>5.3f}\toffset:{:>5.1f}\tstep:{:>3.1f}'
-                      .format('EPO[{}_{:>3.1f}]'.format(epoch, (time.time() - start) / 60),
+                      .format('EPO[{}_{:>3.1f}_{:>3.1f}]'.format(epoch, (time.time() - start) / 60, feed_time_all/60),
                               'train', np.mean(loss_list), np.mean(stop_r_list), 
                               np.mean(total_offset_list), np.mean(step_list)), end='', flush=True)
             if self.save_epochs and epoch % self.save_epochs == 0:  # save the model
@@ -613,7 +624,7 @@ class RRI(object):
             raise AttributeError('need fit or fit_iterable to be called before prediction')
         loss_list = []
         acc_list = []
-        for i, fd in enumerate(self.batcher(X, y, self.batch_size, use_permutation=False)):
+        for i, (fd, feed_time) in enumerate(self.batcher(X, y, self.batch_size, use_permutation=False)):
             feed_dict = self.feed_dict_postprocess(fd, is_train=False)
             if self.loss_func in {'classification', 'pairwise_margin'}:
                 loss, _, acc = self.session_.run([self.loss, self.acc_op, self.acc], feed_dict=feed_dict)
@@ -629,7 +640,7 @@ class RRI(object):
         if not hasattr(self, 'session_'):
             raise AttributeError('need fit or fit_iterable to be called before prediction')
         q_list, doc_list, score_list, loss_list = [], [], [], []
-        for i, fd in enumerate(self.batcher(X, None, self.batch_size, use_permutation=False)):
+        for i, (fd, feed_time) in enumerate(self.batcher(X, None, self.batch_size, use_permutation=False)):
             fd['relevance'] = np.ones([fd['query'].shape[0]], dtype=np.int32) * (self.rel_level - 1)
             feed_dict = self.feed_dict_postprocess(fd, is_train=False)
             if self.loss_func == 'classification':
@@ -797,26 +808,26 @@ def train_test():
     if args.config != None:
         model_config_.update(model_config)
     rri = RRI(**model_config_)
-    
-    #train_X, train_y, test_X, test_y = train_X[:2560], train_y[:2560], test_X[:2560], test_y[:2560]
-    print('train query: {}, test query: {}'.format(len(train_X), len(test_X)))
-    for e in rri.fit_iterable(train_X, train_y):
-        start = time.time()
-        loss, acc = rri.test(test_X, test_y)
-        if args.format == 'ir':
-            ranks, _ = rri.decision_function(test_X_judge)
-            scores = evaluate(ranks, test_qd_judge, metric=ndcg, top_k=20)
-            avg_score = np.mean(list(scores.values()))
-        elif args.format == 'text':
-            avg_score = None
-        print('\t{:>7}:{:>5.3f}:{:>5.3f}:{:>5.3f}'
-            .format('test_{:>3.1f}'.format((time.time()-start)/60), 
-                loss, acc, avg_score), end='', flush=True)
-    '''
-    for e in rri.fit_iterable_tfrecord('data/bing/test.prep.pairwise.tfrecord-???-of-???'):
-        print(e)
-        input()
-    '''
+    if not args.tfrecord:
+        #train_X, train_y, test_X, test_y = train_X[:2560], train_y[:2560], test_X[:2560], test_y[:2560]
+        print('train query: {}, test query: {}'.format(len(train_X), len(test_X)))
+        for e in rri.fit_iterable(train_X, train_y):
+            start = time.time()
+            loss, acc = rri.test(test_X, test_y)
+            if args.format == 'ir':
+                ranks, _ = rri.decision_function(test_X_judge)
+                scores = evaluate(ranks, test_qd_judge, metric=ndcg, top_k=20)
+                avg_score = np.mean(list(scores.values()))
+            elif args.format == 'text':
+                avg_score = None
+            print('\t{:>7}:{:>5.3f}:{:>5.3f}:{:>5.3f}'
+                .format('test_{:>3.1f}'.format((time.time()-start)/60), 
+                    loss, acc, avg_score), end='', flush=True)
+    else:
+        for e in rri.fit_iterable_tfrecord('data/bing/test.prep.pairwise.tfrecord-???-of-???'):
+            print(e)
+            input()
+
 
 if __name__ == '__main__':
     if args.action == 'train_test':
