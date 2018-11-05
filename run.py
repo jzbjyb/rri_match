@@ -543,7 +543,7 @@ class RRI(object):
                     print('adding run metadata for {}'.format(i))
                     if trace_op:
                         profiler_opts = builder(builder.time_and_memory()).order_by('micros').build()
-                        tf.profiler.profile(self.graph_, run_meta=run_metadata, cmd='op', options=profiler_opts)
+                        tf.profiler.profile(self.graph_, run_meta=run_metadata, cmd='scope', options=profiler_opts)
                         input('press to continue')
                     if trace_graph:
                         #profiler.add_step(step=i, run_meta=run_metadata)

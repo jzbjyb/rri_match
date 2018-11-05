@@ -21,9 +21,9 @@ REGISTER_OP("ZeroOut")
 REGISTER_OP("MinDensity")
   .Input("match_matrix: float")
   .Input("dq_size: int32")
-  .Input("location: float")
+  .Input("location: int32")
   .Input("min_density: float")
-  .Output("next_location: float")
+  .Output("next_location: int32")
   .SetShapeFn([](::tensorflow::shape_inference::InferenceContext* c) {
     ::tensorflow::shape_inference::ShapeHandle input0;
     ::tensorflow::shape_inference::ShapeHandle input1;
@@ -31,19 +31,19 @@ REGISTER_OP("MinDensity")
     TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 3, &input0));
     TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 2, &input1));
     TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 2, &input2));
-    c->set_output(0, c->Matrix(c->Dim(c->input(0), 0), 4));
+    c->set_output(0, c->Matrix(4, c->Dim(c->input(0), 0)));
     return Status::OK();
   });
 
 REGISTER_OP("MinDensityMultiCpu")
   .Input("match_matrix: float")
   .Input("dq_size: int32")
-  .Input("location: float")
+  .Input("location: int32")
   .Input("min_density: float")
   .Input("min_jump_offset: int32")
   .Input("use_ratio: bool")
   .Input("only_one: bool")
-  .Output("next_location: float")
+  .Output("next_location: int32")
   .SetShapeFn([](::tensorflow::shape_inference::InferenceContext* c) {
     ::tensorflow::shape_inference::ShapeHandle input0;
     ::tensorflow::shape_inference::ShapeHandle input1;
@@ -53,7 +53,7 @@ REGISTER_OP("MinDensityMultiCpu")
     TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 2, &input1));
     TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 2, &input2));
     TF_RETURN_IF_ERROR(c->WithRank(c->input(3), 1, &input3));
-    c->set_output(0, c->Matrix(c->Dim(c->input(0), 0), 4));
+    c->set_output(0, c->Matrix(4, c->Dim(c->input(0), 0)));
     return Status::OK();
   });
 
@@ -98,26 +98,26 @@ class MinDensityOp : public OpKernel {
         errors::InvalidArgument("Must be a scalar"));
       auto match_matrix = match_matrix_t.tensor<float, 3>();
       auto dq_size = dq_size_t.tensor<int32, 2>();
-      auto location = location_t.tensor<float, 2>();
+      auto location = location_t.tensor<int32, 2>();
       auto min_density = min_density_t.scalar<float>()();
       const int64 batch_size = match_matrix_t.dim_size(0);
       // output
       TensorShape output_shape;
-      output_shape.AddDim(batch_size);
       output_shape.AddDim(4);
+      output_shape.AddDim(batch_size);
       Tensor* next_location_t = NULL;
       OP_REQUIRES_OK(context, context->allocate_output(0, output_shape, &next_location_t));
-      auto next_location = next_location_t->tensor<float, 2>();
+      auto next_location = next_location_t->tensor<int32, 2>();
       // find location one by one
       int64 dur_all = 0;
       for (int64 b = 0; b < batch_size; b++) {
         high_resolution_clock::time_point t1 = high_resolution_clock::now();
-        const int64 d_len = dq_size(b, 0);
-        const int64 q_len = dq_size(b, 1);
-        const int64 q_start = (int)floor(location(b, 1));
-        const int64 q_offset = (int)floor(location(b, 3));
-        const int64 d_start = (int)floor(location(b, 0));
-        const int64 d_offset = (int)floor(location(b, 2));
+        const int64 d_len = dq_size(0, b);
+        const int64 q_len = dq_size(1, b);
+        const int64 q_start = location(1, b);
+        const int64 q_offset = location(3, b);
+        const int64 d_start = location(0, b);
+        const int64 d_offset = location(2, b);
         /*
         std::cout << "batch sample: " << b
                   << ", start ind: " << d_start
@@ -203,15 +203,15 @@ class MinDensityOp : public OpKernel {
         free(density_offset);
         // update location
         if (max_end != -1) {
-          next_location(b, 0) = (float)(max_end + d_start - max_offset + 1);
-          next_location(b, 1) = location(b, 1);
-          next_location(b, 2) = (float)max_offset;
-          next_location(b, 3) = location(b, 3);
+          next_location(0, b) = max_end + d_start - max_offset + 1;
+          next_location(1, b) = location(1, b);
+          next_location(2, b) = max_offset;
+          next_location(3, b) = location(3, b);
         } else {
-          next_location(b, 0) = (float)(d_start + d_offset); // overflow
-          next_location(b, 1) = location(b, 1);
-          next_location(b, 2) = 0;
-          next_location(b, 3) = location(b, 3);
+          next_location(0, b) = d_start + d_offset; // overflow
+          next_location(1, b) = location(1, b);
+          next_location(2, b) = 0;
+          next_location(3, b) = location(3, b);
         }
         high_resolution_clock::time_point t2 = high_resolution_clock::now();
         auto dur = duration_cast<nanoseconds>(t2-t1).count();
@@ -235,15 +235,15 @@ class MinDensityMultiCpuOp : public OpKernel {
 
     static void OneTask(int64 start, int64 limit, OpKernelContext* context,
       typename TTypes<float, 3>::ConstTensor match_matrix, typename TTypes<int32, 2>::ConstTensor dq_size,
-      typename TTypes<float, 2>::ConstTensor location, typename TTypes<float, 1>::ConstTensor min_density, 
-      int32 min_jump_offset, bool use_ratio, bool only_one, typename TTypes<float, 2>::Tensor next_location) {
+      typename TTypes<int32, 2>::ConstTensor location, typename TTypes<float, 1>::ConstTensor min_density, 
+      int32 min_jump_offset, bool use_ratio, bool only_one, typename TTypes<int32, 2>::Tensor next_location) {
       for (int64 b = start; b < limit; b++) {
-        const int64 d_len = dq_size(b, 0);
-        const int64 q_len = dq_size(b, 1);
-        const int64 q_start = (int)floor(location(b, 1));
-        const int64 q_offset = (int)floor(location(b, 3));
-        const int64 d_start = (int)floor(location(b, 0));
-        const int64 d_offset = (int)floor(location(b, 2));
+        const int64 d_len = dq_size(0, b);
+        const int64 q_len = dq_size(1, b);
+        const int64 q_start = location(1, b);
+        const int64 q_offset = location(3, b);
+        const int64 d_start = location(0, b);
+        const int64 d_offset = location(2, b);
         /*
         std::cout << "batch sample: " << b
                   << ", start ind: " << d_start
@@ -364,15 +364,15 @@ class MinDensityMultiCpuOp : public OpKernel {
         free(density_offset);
         // update location
         if (max_end != -1) {
-          next_location(b, 0) = (float)(max_end + d_start - max_offset + 1);
-          next_location(b, 1) = location(b, 1);
-          next_location(b, 2) = (float)max_offset;
-          next_location(b, 3) = location(b, 3);
+          next_location(0, b) = max_end + d_start - max_offset + 1;
+          next_location(1, b) = location(1, b);
+          next_location(2, b) = max_offset;
+          next_location(3, b) = location(3, b);
         } else {
-          next_location(b, 0) = (float)(d_start + d_offset); // overflow
-          next_location(b, 1) = location(b, 1);
-          next_location(b, 2) = 0;
-          next_location(b, 3) = location(b, 3);
+          next_location(0, b) = d_start + d_offset; // overflow
+          next_location(1, b) = location(1, b);
+          next_location(2, b) = 0;
+          next_location(3, b) = location(3, b);
         }
         /*
         if (next_location(b, 2) >= 1000) {
@@ -402,7 +402,7 @@ class MinDensityMultiCpuOp : public OpKernel {
         errors::InvalidArgument("Must be a scalar"));
       auto match_matrix = match_matrix_t.tensor<float, 3>();
       auto dq_size = dq_size_t.tensor<int32, 2>();
-      auto location = location_t.tensor<float, 2>();
+      auto location = location_t.tensor<int32, 2>();
       auto min_density = min_density_t.tensor<float, 1>();
       auto min_jump_offset = min_jump_offset_t.scalar<int32>()();
       auto use_ratio = use_ratio_t.scalar<bool>()();
@@ -411,11 +411,11 @@ class MinDensityMultiCpuOp : public OpKernel {
       const int64 batch_size = match_matrix_t.dim_size(0);
       // output
       TensorShape output_shape;
-      output_shape.AddDim(batch_size);
       output_shape.AddDim(4);
+      output_shape.AddDim(batch_size);
       Tensor* next_location_t = NULL;
       OP_REQUIRES_OK(context, context->allocate_output(0, output_shape, &next_location_t));
-      auto next_location = next_location_t->tensor<float, 2>();
+      auto next_location = next_location_t->tensor<int32, 2>();
       // find location using multiple cpu
       auto worker_threads = *(context->device()->tensorflow_cpu_worker_threads());
       /*

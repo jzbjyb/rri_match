@@ -24,6 +24,13 @@ def batch_slice(batch, start, offset, pad_values=None):
     return region
 
 
+def batch_where(cond, xs, ys):
+    if xs == 1:
+        xs = tf.ones_like(ys[0])
+        xs = [xs] * len(ys)
+    return [tf.where(cond, xs[i], ys[i]) for i in range(len(xs))]
+
+
 def get_glimpse_location(match_matrix, dq_size, location, glimpse):
     '''
     get next glimpse location (g_t+1) based on last jump location (j_t)
@@ -37,12 +44,9 @@ def get_glimpse_location(match_matrix, dq_size, location, glimpse):
                                      tf.cast(gp_d_offset, dtype=tf.float32),
                                      tf.cast(dq_size[:, 1], dtype=tf.float32)], axis=1)
     elif glimpse == 'all_next_hard':
-        gp_d_position = tf.cast(tf.floor(location[:, 0] + location[:, 2]), dtype=tf.int32)
-        gp_d_offset = dq_size[:, 0] - gp_d_position
-        glimpse_location = tf.stack([tf.cast(gp_d_position, dtype=tf.float32),
-                                     tf.zeros_like(location[:, 1]),
-                                     tf.cast(gp_d_offset, dtype=tf.float32),
-                                     tf.cast(dq_size[:, 1], dtype=tf.float32)], axis=1)
+        gp_d_position = location[0] + location[2]
+        gp_d_offset = dq_size[0] - gp_d_position
+        glimpse_location = [gp_d_position, tf.zeros_like(location[1]), gp_d_offset, dq_size[1]]
     else:
         raise NotImplementedError()
     return glimpse_location
@@ -68,13 +72,15 @@ def get_jump_location(match_matrix, dq_size, location, jump, **kwargs):
         new_location = tf.stack([tf.cast(d_loc, dtype=tf.float32),
                                  location[:, 1], tf.ones([bs]), location[:, 3]], axis=1)
     elif jump == 'min_density_hard':
-        #new_location = jumper.min_density(match_matrix=match_matrix, dq_size=dq_size, location=location,
-        #                                  min_density=min_density)
+        #new_location = jumper.min_density(match_matrix=match_matrix, dq_size=dq_size, 
+        #    location=tf.stack(location, axis=0), min_density=min_density)
         # there is no need to use multi-thread op, because this is fast and thus not the bottleneck
         new_location = jumper.min_density_multi_cpu(
-            match_matrix=match_matrix, dq_size=dq_size, location=location, min_density=kwargs['min_density'],
+            match_matrix=match_matrix, dq_size=dq_size, 
+            location=tf.stack(location, axis=0), min_density=kwargs['min_density'],
             min_jump_offset=kwargs['min_jump_offset'], use_ratio=False, only_one=False)
         new_location = tf.stop_gradient(new_location)
+        new_location = [new_location[i] for i in range(4)]
     elif jump == 'all':
         new_location = tf.stop_gradient(location)
     elif jump == 'test':
@@ -102,13 +108,14 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
     cur_location = location_ta.read(time)
     cur_next_location = location_ta.read(time + 1)
     with vs.variable_scope('ReprCond'):
+        pass
         # use last representation if the location remains unchanged
-        doc_reuse = \
-            tf.logical_and(tf.reduce_all(tf.equal(cur_location[:, 0:4:2], cur_next_location[:, 0:4:2])), 
-                           tf.greater_equal(time, 1))
-        query_reuse = \
-            tf.logical_and(tf.reduce_all(tf.equal(cur_location[:, 1:4:2], cur_next_location[:, 1:4:2])), 
-                           tf.greater_equal(time, 1))
+        #doc_reuse = \
+        #    tf.logical_and(tf.reduce_all(tf.equal(cur_location[:, 0:4:2], cur_next_location[:, 0:4:2])), 
+        #                   tf.greater_equal(time, 1))
+        #query_reuse = \
+        #    tf.logical_and(tf.reduce_all(tf.equal(cur_location[:, 1:4:2], cur_next_location[:, 1:4:2])), 
+        #                   tf.greater_equal(time, 1))
     if represent == 'sum_hard':
         state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, lambda: state_ta.write(0, tf.zeros([bs, 1])))
         start = tf.cast(tf.floor(location[:, :2]), dtype=tf.int32)
@@ -132,9 +139,7 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
         is not important because we select regions only based on location of doc.
         Otherwise, the TensorArray will raise inconsistent shape exception.
         '''
-        start = tf.cast(tf.floor(location[:, :2]), dtype=tf.int32)
-        offset = tf.cast(tf.floor(location[:, 2:]), dtype=tf.int32)
-        d_start, d_offset = start[:, 0], offset[:, 0]
+        d_start, d_offset = location[0], location[2]
         local_match_matrix = batch_slice(match_matrix, d_start, d_offset, pad_values=0)
         # initialize the first element of state_ta
         state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, 
@@ -291,6 +296,12 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
     max_q_len = tf.shape(query)[1]
     max_d_len = tf.shape(doc)[1]
     word_vector_dim = word_vector.get_shape().as_list()[1]
+    '''
+    Because this implementation involves a while_loop, lots of strided_slice and cast 
+    will lower the performance and GPU utility. So dq_size and location is transposed to 
+    (dim, batch_size) to accelerate while_loop.
+    '''
+    dq_size_t = tf.transpose(dq_size)
     with vs.variable_scope('Embed'):
         query_emb = tf.nn.embedding_lookup(word_vector, query)
         doc_emb = tf.nn.embedding_lookup(word_vector, doc)
@@ -304,8 +315,8 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
                 match_matrix = tf.matmul(doc_emb, tf.transpose(query_emb, [0, 2, 1]))
             elif interaction == 'cosine':
                 match_matrix = tf.matmul(doc_emb, tf.transpose(query_emb, [0, 2, 1]))
-                match_matrix /= tf.expand_dims(tf.sqrt(tf.reduce_sum(doc_emb * doc_emb, axis=2)), axis=2) * \
-                                tf.expand_dims(tf.sqrt(tf.reduce_sum(query_emb * query_emb, axis=2)), axis=1)
+                match_matrix /= tf.sqrt(tf.reduce_sum(doc_emb * doc_emb, axis=2, keep_dims=True)) * \
+                                tf.sqrt(tf.reduce_sum(query_emb * query_emb, axis=2, keep_dims=True))
         if min_density != None:
             if use_ratio:
                 density = tf.reduce_max(match_matrix, 2)
@@ -315,9 +326,13 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
             else:
                 min_density = tf.ones_like(dq_size[:, 0], dtype=tf.float32) * min_density
     with vs.variable_scope('SelectiveJump'):
-        location_ta = tf.TensorArray(dtype=tf.float32, size=1, name='location_ta',
+        if jump.endswith('hard'):
+            location_ta_dtype = tf.int32
+        elif jump.endswith('soft'):
+            location_ta_dtype = tf.float32
+        location_ta = tf.TensorArray(dtype=location_ta_dtype, size=1, name='location_ta',
                                      clear_after_read=False, dynamic_size=True) # (d_ind,q_ind,d_len,q_len)
-        location_ta = location_ta.write(0, tf.zeros([bs, 4])) # start from the top-left corner
+        location_ta = location_ta.write(0, tf.zeros([4, bs], dtype=location_ta_dtype)) # start from the top-left corner
         state_ta = tf.TensorArray(dtype=tf.float32, size=1, name='state_ta', clear_after_read=False, 
                                   dynamic_size=True)
         query_repr_ta = tf.TensorArray(dtype=tf.float32, size=1, name='query_repr_ta', clear_after_read=False, 
@@ -325,64 +340,95 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
         doc_repr_ta = tf.TensorArray(dtype=tf.float32, size=1, name='doc_repr_ta', clear_after_read=False, 
                                      dynamic_size=True)
         step = tf.zeros([bs], dtype=tf.int32)
-        total_offset = tf.zeros([bs], dtype=tf.float32)
+        total_offset = tf.zeros([bs], dtype=location_ta_dtype)
         is_stop = tf.zeros([bs], dtype=tf.bool)
         time = tf.constant(0)
-        def cond(time, is_stop, step, state_ta, doc_repr_ta, query_repr_ta, location_ta, dq_size, total_offset):
+        def cond(time, is_stop, step, state_ta, doc_repr_ta, query_repr_ta, location_ta, dq_size_t, total_offset):
             return tf.logical_and(tf.logical_not(tf.reduce_all(is_stop)),
                                   tf.less(time, tf.constant(max_jump_step)))
-        def body(time, is_stop, step, state_ta, doc_repr_ta, query_repr_ta, location_ta, dq_size, total_offset):
+        def body(time, is_stop, step, state_ta, doc_repr_ta, query_repr_ta, location_ta, dq_size_t, total_offset):
             cur_location = location_ta.read(time)
+            # The basic optimization is that:
+            # (1) each step ("glimpse," "jump," and "represent") use the location as if 
+            #     it is in correct dtype (int32 or float32). dtype conversion is conducted 
+            #     when needed to reduce the number of calls to cast.
+            # (2) location is divided into four parts (d_start, q_start, d_offset, q_offset)
+            #     to reduce the number of calls to stride_slice.
+            cur_location_l = [cur_location[i] for i in range(4)]
             #time = tf.Print(time, [time], message='time:')
             with vs.variable_scope('Glimpse'):
-                glimpse_location = get_glimpse_location(match_matrix, dq_size, cur_location, glimpse)
+                if glimpse.endswith('soft') and jump.endswith('hard'):
+                    cur_location_in_glimpse = [tf.cast(cl, dtype=tf.float32) for cl in cur_location_l]
+                elif glimpse.endswith('hard') and jump.endswith('soft'):
+                    cur_location_in_glimpse = [tf.cast(cl, dtype=tf.int32) for cl in cur_location_l]
+                else:
+                    cur_location_in_glimpse = cur_location_l
+                glimpse_location = get_glimpse_location(
+                    match_matrix, dq_size_t, cur_location_in_glimpse, glimpse)
                 # stop when the start index overflow
-                new_stop = tf.reduce_any(glimpse_location[:, :2] > tf.cast(dq_size - 1, tf.float32), axis=1)
-                glimpse_location = tf.where(new_stop, cur_location, glimpse_location)
+                if glimpse.endswith('soft'):
+                    new_stop = tf.reduce_any(tf.stack(glimpse_location[:2], axis=0) > \
+                        tf.cast(dq_size_t-1, tf.float32), axis=0)
+                    glimpse_location = batch_where(new_stop, cur_location_in_glimpse, glimpse_location)
+                elif glimpse.endswith('hard'):
+                    new_stop = tf.reduce_any(tf.stack(glimpse_location[:2], axis=0) > \
+                        dq_size_t-1, axis=0)
+                    glimpse_location = batch_where(new_stop, cur_location_in_glimpse, glimpse_location)
                 is_stop = tf.logical_or(is_stop, new_stop)
             with vs.variable_scope('Jump'):
-                new_location = get_jump_location(match_matrix, dq_size, glimpse_location, jump, 
+                if glimpse.endswith('soft') and jump.endswith('hard'):
+                    glimpse_location = [tf.cast(gl, dtype=tf.int32) for gl in glimpse_location]
+                elif glimpse.endswith('hard') and jump.endswith('soft'):
+                    glimpse_location = [tf.cast(gl, dtype=tf.float32) for gl in glimpse_location]
+                new_location = get_jump_location(match_matrix, dq_size_t, glimpse_location, jump, 
                     min_density=min_density, min_jump_offset=min_jump_offset)
                 if max_jump_offset != None:
                     # truncate long document offset
-                    new_location = tf.concat([new_location[:, :2],
-                                              tf.minimum(new_location[:, 2:3], max_jump_offset), 
-                                              new_location[:, 3:]], axis=1)
+                    new_location = [new_location[0], new_location[1], 
+                        tf.minimum(new_location[2], max_jump_offset), new_location[3]]
                 if max_jump_offset2 != None:
                     # truncate long query offset
-                    new_location = tf.concat([new_location[:, :2],
-                                              new_location[:, 2:3], 
-                                              tf.minimum(new_location[:, 3:], max_jump_offset2)], 
-                                              axis=1)
+                    new_location = [new_location[0], new_location[1], new_location[2],
+                        tf.minimum(new_location[3], max_jump_offset2)]
                 # stop when the start index overflow
-                new_stop = tf.reduce_any(new_location[:, :2] > tf.cast(dq_size - 1, tf.float32), axis=1)
+                if jump.endswith('soft'):
+                    new_stop = tf.reduce_any(tf.stack(new_location[:2], axis=0) > \
+                        tf.cast(dq_size_t-1, tf.float32), axis=0)
+                elif jump.endswith('hard'):
+                    new_stop = tf.reduce_any(tf.stack(new_location[:2], axis=0) > \
+                        dq_size_t-1, axis=0)
                 is_stop = tf.logical_or(is_stop, new_stop)
-                location_ta = location_ta.write(time + 1, tf.where(is_stop, cur_location, new_location))
-                # total length to be modeled
-                total_offset += tf.where(is_stop, tf.zeros_like(total_offset), new_location[:, 2])
-                # actual rnn length (with padding)
-                #total_offset += tf.where(is_stop, tf.zeros_like(total_offset), 
-                #    tf.ones_like(total_offset) * \
-                #    tf.reduce_max(tf.where(is_stop, tf.zeros_like(total_offset), new_location[:, 2])))
+                # location_ta and total_offset alwasy have the same dtype with new_location 
+                # which is generated by jump.
+                location_ta = location_ta.write(time + 1, 
+                    tf.stack(batch_where(is_stop, cur_location_l, new_location), axis=0))
+                # total length considered
+                total_offset += tf.where(is_stop, tf.zeros_like(total_offset), new_location[2])
             with vs.variable_scope('Represent'):
                 cur_next_location = location_ta.read(time + 1)
+                cur_next_location_l = [cur_next_location[i] for i in range(4)]
                 # location_one_out is to prevent duplicate time-consuming calculation
-                location_one_out = tf.where(is_stop, tf.ones_like(cur_location), cur_next_location)
+                location_one_out = batch_where(is_stop, 1, cur_next_location_l)
+                if represent.endswith('hard') and jump.endswith('soft'):
+                    location_one_out = [tf.cast(loo, dtype=tf.int32) for loo in location_one_out]
+                elif represent.endswith('soft') and jump.endswith('hard'):
+                    location_one_out =[tf.cast(loo, dtype=tf.float32) for loo in location_one_out]
                 state_ta, doc_repr_ta, query_repr_ta = \
-                    get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vector, \
+                    get_representation(match_matrix, dq_size_t, query, query_emb, doc, doc_emb, word_vector, \
                                        location_one_out, represent, max_jump_offset=max_jump_offset, \
                                        max_jump_offset2=max_jump_offset2, rnn_size=rnn_size, keep_prob=keep_prob, \
                                        separate=separate, location_ta=location_ta, state_ta=state_ta, doc_repr_ta=doc_repr_ta, \
                                        query_repr_ta=query_repr_ta, time=time, is_stop=is_stop)
             step = step + tf.where(is_stop, tf.zeros([bs], dtype=tf.int32), tf.ones([bs], dtype=tf.int32))
-            return time + 1, is_stop, step, state_ta, doc_repr_ta, query_repr_ta, location_ta, dq_size, total_offset
-        _, is_stop, step, state_ta, doc_repr_ta, query_repr_ta, location_ta, dq_size, total_offset = \
+            return time + 1, is_stop, step, state_ta, doc_repr_ta, query_repr_ta, location_ta, dq_size_t, total_offset
+        _, is_stop, step, state_ta, doc_repr_ta, query_repr_ta, location_ta, dq_size_t, total_offset = \
             tf.while_loop(cond, body, [time, is_stop, step, state_ta, doc_repr_ta, query_repr_ta, 
-                          location_ta, dq_size, total_offset], parallel_iterations=1)
+                          location_ta, dq_size_t, total_offset], parallel_iterations=1)
     with vs.variable_scope('Aggregate'):
         states = state_ta.stack()
         location = location_ta.stack()
-        location = tf.transpose(location, [1, 0 ,2])
+        location = tf.cast(location, dtype=tf.float32)
+        location = tf.transpose(location, [2, 0, 1])
         stop_ratio = tf.reduce_mean(tf.cast(is_stop, tf.float32))
         complete_ratio = tf.reduce_mean(tf.reduce_min(
             [(location[:, -1, 0] + location[:, -1, 2]) / tf.cast(dq_size[:, 0], dtype=tf.float32),
