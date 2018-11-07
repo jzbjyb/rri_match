@@ -24,6 +24,27 @@ def batch_slice(batch, start, offset, pad_values=None):
     return region
 
 
+def batch_slice_slow(batch, start, offset, pad_values=None):
+    bs = tf.shape(batch)[0]
+    max_offset = tf.reduce_max(offset)
+    min_last = tf.reduce_min(tf.shape(batch)[1] - start)
+    pad_len = tf.reduce_max([max_offset - min_last, 0])
+    rank = len(batch.get_shape())
+    remain = tf.shape(batch)[2:]
+    # padding
+    batch_pad = tf.pad(batch, [[0, 0], [0, pad_len]] + [[0, 0] for r in range(rank - 2)], 'CONSTANT',
+                       constant_values=pad_values)
+    dim_len = tf.shape(batch_pad)[1]
+    # gather
+    start = tf.expand_dims(start, axis=-1)
+    ind = tf.expand_dims(tf.range(dim_len), axis=0)
+    ind = tf.logical_and(ind >= start, ind < start + max_offset)
+    ind = tf.cast(ind, dtype=tf.int32)
+    _, region = tf.dynamic_partition(batch_pad, ind, 2)
+    region = tf.reshape(region, tf.concat([[bs, max_offset], remain], axis=0))
+    return region
+
+
 def batch_where(cond, xs, ys):
     if xs == 1:
         xs = tf.ones_like(ys[0])
@@ -285,7 +306,8 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
         representation = tf.ones_like(location[:, :1])
     else:
         raise NotImplementedError()
-    state_ta = state_ta.write(time + 1, tf.where(is_stop, state_ta.read(time), representation))
+    state_ta = state_ta.write(time + 1, representation)
+    #state_ta = state_ta.write(time + 1, tf.where(is_stop, state_ta.read(time), representation))
     return state_ta, doc_repr_ta, query_repr_ta
 
 
@@ -369,11 +391,10 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
                 if glimpse.endswith('soft'):
                     new_stop = tf.reduce_any(tf.stack(glimpse_location[:2], axis=0) > \
                         tf.cast(dq_size_t-1, tf.float32), axis=0)
-                    glimpse_location = batch_where(new_stop, cur_location_in_glimpse, glimpse_location)
                 elif glimpse.endswith('hard'):
                     new_stop = tf.reduce_any(tf.stack(glimpse_location[:2], axis=0) > \
                         dq_size_t-1, axis=0)
-                    glimpse_location = batch_where(new_stop, cur_location_in_glimpse, glimpse_location)
+                glimpse_location = batch_where(new_stop, cur_location_in_glimpse, glimpse_location)
                 is_stop = tf.logical_or(is_stop, new_stop)
             with vs.variable_scope('Jump'):
                 if glimpse.endswith('soft') and jump.endswith('hard'):
@@ -408,7 +429,8 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
                 cur_next_location = location_ta.read(time + 1)
                 cur_next_location_l = [cur_next_location[i] for i in range(4)]
                 # location_one_out is to prevent duplicate time-consuming calculation
-                location_one_out = batch_where(is_stop, 1, cur_next_location_l)
+                #location_one_out = batch_where(is_stop, 1, cur_next_location_l)
+                location_one_out = cur_next_location_l
                 if represent.endswith('hard') and jump.endswith('soft'):
                     location_one_out = [tf.cast(loo, dtype=tf.int32) for loo in location_one_out]
                 elif represent.endswith('soft') and jump.endswith('hard'):
