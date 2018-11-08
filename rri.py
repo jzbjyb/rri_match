@@ -3,7 +3,7 @@ import tensorflow as tf
 from tensorflow.python.ops import variable_scope as vs
 from cnn import cnn, DynamicMaxPooling
 jumper = tf.load_op_library('./jumper.so')
-
+DELTA = 1e-5 # used to avoid dividing zero
 
 def batch_slice(batch, start, offset, pad_values=None):
     bs = tf.shape(batch)[0]
@@ -164,6 +164,19 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
         local_match_matrix = tf.maximum(local_match_matrix, 0)
         term_freq = tf.reduce_sum(local_match_matrix, axis=1)
         term_freq = tf.log(term_freq + 1)
+        representation = tf.reduce_sum(term_freq, axis=1, keep_dims=True)
+    elif represent == 'mean_pooling':
+        '''
+        Calculate mean similarity between document words and each query word. This is for
+        comparison with log_tf_hard, which only uses exact match.
+        '''
+        state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, 
+            lambda: state_ta.write(0, tf.zeros([bs, 1], dtype=tf.float32)))
+        d_start, d_offset = location[0], location[2]
+        local_match_matrix = batch_slice(match_matrix, d_start, d_offset, pad_values=0)
+        local_match_matrix = tf.maximum(local_match_matrix, 0)
+        term_freq = tf.reduce_sum(local_match_matrix, axis=1)
+        term_freq = term_freq / tf.expand_dims(tf.cast(d_offset, dtype=tf.float32) + DELTA, axis=1)
         representation = tf.reduce_sum(term_freq, axis=1, keep_dims=True)
     elif represent == 'interaction_copy_hard':
         '''
