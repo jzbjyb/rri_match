@@ -100,15 +100,12 @@ def get_jump_location(match_matrix, dq_size, location, jump, **kwargs):
             match_matrix=match_matrix, dq_size=dq_size, 
             location=tf.stack(location, axis=0), min_density=kwargs['min_density'],
             min_jump_offset=kwargs['min_jump_offset'], use_ratio=False, only_one=False)
-        new_location = tf.stop_gradient(new_location)
         new_location = [new_location[i] for i in range(4)]
-    elif jump == 'all':
-        new_location = tf.stop_gradient(location)
-    elif jump == 'test':
-        new_location = location[:, 0] + tf.reduce_min([tf.ones_like(location[:, 1]), location[:, 1]])
-        new_location = tf.stack([new_location, location[:, 1], tf.ones([bs]), location[:, 3]], axis=1)
+    elif jump == 'all_hard' or jump == 'all_soft':
+        new_location = location
     else:
         raise NotImplementedError()
+    new_location = [tf.stop_gradient(nl) for nl in new_location]
     return new_location
 
 
@@ -153,6 +150,21 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
                           [ind, match_matrix, start, end, representation_ta],
                           parallel_iterations=1000)
         representation = representation_ta.stack()
+    elif represent == 'log_tf_hard':
+        '''
+        Use log(tf + 1) to calculate the term frequency for each term in the query and sum them.
+        This is mimicing ltc.lnc vector space model, but not use document length normalization 
+        and df to make fair comparison with neural models.
+        '''
+        # initialize the first element of state_ta
+        state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, 
+            lambda: state_ta.write(0, tf.zeros([bs, 1], dtype=tf.float32)))
+        d_start, d_offset = location[0], location[2]
+        local_match_matrix = batch_slice(match_matrix, d_start, d_offset, pad_values=0)
+        local_match_matrix = tf.maximum(local_match_matrix, 0)
+        term_freq = tf.reduce_sum(local_match_matrix, axis=1)
+        term_freq = tf.log(term_freq + 1)
+        representation = tf.reduce_sum(term_freq, axis=1, keep_dims=True)
     elif represent == 'interaction_copy_hard':
         '''
         This represent method just copy the match_matrix selected by current region to state_ta.
@@ -332,6 +344,11 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
         if interaction == 'indicator':
             match_matrix = tf.cast(tf.equal(tf.expand_dims(doc, axis=2), tf.expand_dims(query, axis=1)),
                                    dtype=tf.float32)
+            query_boundary = tf.expand_dims(tf.range(max_q_len), dim=0) < dq_size[:, 1:]
+            doc_boundary = tf.expand_dims(tf.range(max_d_len), dim=0) < dq_size[:, :1]
+            match_matrix = match_matrix * \
+                tf.cast(tf.logical_and(tf.expand_dims(query_boundary, axis=1), 
+                tf.expand_dims(doc_boundary, axis=2)), dtype=tf.float32)
         else:
             if interaction == 'dot':
                 match_matrix = tf.matmul(doc_emb, tf.transpose(query_emb, [0, 2, 1]))
@@ -485,4 +502,4 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
                 signal = tf.reshape(concat_repr, [bs, 200])
         return signal, {'step': step, 'location': location, 'match_matrix': match_matrix, 
                         'complete_ratio': complete_ratio, 'is_stop': is_stop, 'stop_ratio': stop_ratio,
-                        'doc_emb': doc_emb, 'total_offset': total_offset}
+                        'doc_emb': doc_emb, 'total_offset': total_offset, 'signal': signal}

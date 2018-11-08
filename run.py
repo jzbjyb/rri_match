@@ -220,7 +220,7 @@ class RRI(object):
          max_jump_offset=None, max_jump_offset2=None, rel_level=2, loss_func='regression', keep_prob=1.0, 
          paradigm='pointwise', learning_rate=0.1, random_seed=0, 
          n_epochs=100, batch_size=100, batch_num=None, batcher=None, verbose=1, save_epochs=None, reuse_model=None, 
-         save_model=None, summary_path=None, tfrecord=False):
+         save_model=None, summary_path=None, tfrecord=False, unsupervised=False):
     self.max_q_len = max_q_len
     self.max_d_len = max_d_len
     self.max_jump_step = max_jump_step
@@ -258,6 +258,7 @@ class RRI(object):
     self.save_model = save_model
     self.summary_path = summary_path
     self.tfrecord = tfrecord
+    self.unsupervised = unsupervised
 
 
   @staticmethod
@@ -322,7 +323,7 @@ class RRI(object):
     relevance = parsed_features['label']
     query = query[:max_q_len]
     doc = doc[:max_d_len]
-    qd_size = tf.maximum(qd_size, [max_q_len, max_d_len])
+    qd_size = tf.minimum(qd_size, [max_q_len, max_d_len])
     return query, doc, qd_size, relevance, parsed_features['qid'], parsed_features['docid']
 
 
@@ -378,7 +379,7 @@ class RRI(object):
         # (1) train_dataset is used for training. It could be pointwise of pairwise.
         # (2) test_dataset has the same format with train_dataset but is used for testing.
         #     The paradigm of test_dataset should be the same with train_data.
-        # (3) decison_dataset is used for decision_function, like ranking generationg.
+        # (3) decision_dataset is used for decision_function, like ranking generationg.
         #     It should always be pointwise.
         train_dataset = tf.data.TFRecordDataset.list_files(self.tfrecord_pattern)
         test_dataset = tf.data.TFRecordDataset.list_files(self.tfrecord_pattern)
@@ -434,10 +435,13 @@ class RRI(object):
            jump=self.jump, represent=self.represent, 
           separate=self.separate, aggregate=self.aggregate, rnn_size=self.rnn_size, 
           max_jump_offset=self.max_jump_offset, keep_prob=self.keep_prob_)
+    initializer = tf.constant_initializer(1) if self.unsupervised else None
     if self.loss_func == 'classification':
       with vs.variable_scope('ClassificationLoss'):
-        logit_w = tf.get_variable('logit_weight', shape=[self.outputs.get_shape()[1], self.rel_level])
-        logit_b = tf.get_variable('logit_bias', shape=[self.rel_level], initializer=tf.constant_initializer())
+        logit_w = tf.get_variable('logit_weight', 
+          shape=[self.outputs.get_shape()[1], self.rel_level], initializer=initializer)
+        logit_b = tf.get_variable('logit_bias', 
+          shape=[self.rel_level], initializer=tf.constant_initializer())
         logits = tf.nn.bias_add(tf.matmul(self.outputs, logit_w), logit_b)
         self.scores = -tf.nn.softmax_cross_entropy_with_logits(
           labels=tf.one_hot(self.ones_like(self.relevance)*(self.rel_level-1), self.rel_level), 
@@ -448,14 +452,16 @@ class RRI(object):
         self.acc, self.acc_op = tf.metrics.accuracy(labels=self.relevance, predictions=tf.argmax(logits,1))
     elif self.loss_func == 'regression':
       with vs.variable_scope('RegressionLoss'):
-        score_w = tf.get_variable('score_weight', shape=[self.outputs.get_shape()[1], 1])
+        score_w = tf.get_variable('score_weight', 
+          shape=[self.outputs.get_shape()[1], 1], initializer=initializer)
         score_b = tf.get_variable('score_bias', shape=[1], initializer=tf.constant_initializer())
         self.scores = tf.squeeze(tf.nn.bias_add(tf.matmul(self.outputs, score_w), score_b))
         self.loss = tf.nn.l2_loss(self.scores - tf.cast(self.relevance, dtype=tf.float32))
         self.acc_op, self.acc = tf.no_op(), tf.no_op()
     elif self.loss_func == 'pairwise_margin':
       with vs.variable_scope('PairwiseMargin'):
-        score_w = tf.get_variable('score_weight', shape=[self.outputs.get_shape()[1], 1])
+        score_w = tf.get_variable('score_weight', 
+          shape=[self.outputs.get_shape()[1], 1], initializer=initializer)
         score_b = tf.get_variable('score_bias', shape=[1], initializer=tf.constant_initializer())
         self.scores = tf.squeeze(tf.nn.bias_add(tf.matmul(self.outputs, score_w), score_b))
         pairwise_scores = tf.reshape(self.scores, [-1, 2])
@@ -542,6 +548,9 @@ class RRI(object):
     run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
     run_metadata = tf.RunMetadata()
     # train
+    if self.unsupervised:
+      yield
+      return
     for epoch in range(self.n_epochs):
       epoch += 1
       start = time.time()
@@ -561,11 +570,12 @@ class RRI(object):
         feed_dict = self.feed_dict_postprocess(fd, is_train=True)
         fetch = [self.rri_info['step'], self.rri_info['location'], self.rri_info['match_matrix'],
              self.loss, self.rri_info['complete_ratio'], self.rri_info['is_stop'], self.rri_info['stop_ratio'], 
-             self.rri_info['total_offset'], self.trainer, self.qid, self.docid, self.qd_size]
+             self.rri_info['total_offset'], self.rri_info['signal'], self.trainer, 
+             self.qid, self.docid, self.qd_size]
         start_time = time.time()
         try:
           if self.summary_path != None and i % 1 == 0: # run statistics
-            step, location, match_matrix, loss, com_r, is_stop, stop_r, total_offset, _, \
+            step, location, match_matrix, loss, com_r, is_stop, stop_r, total_offset, signal, _, \
             fd['qid'], fd['docid'], fd['qd_size'] = \
               self.session_.run(fetch, feed_dict=feed_dict, options=run_options, run_metadata=run_metadata)
             self.train_writer.add_run_metadata(run_metadata, 'step%d' % i)
@@ -585,7 +595,7 @@ class RRI(object):
               trace_file.write(trace.generate_chrome_trace_format())
             print('profile run metadata for {}'.format(i))
           else:
-            step, location, match_matrix, loss, com_r, is_stop, stop_r, total_offset, _, \
+            step, location, match_matrix, loss, com_r, is_stop, stop_r, total_offset, signal, _, \
             fd['qid'], fd['docid'], fd['qd_size'] = \
               self.session_.run(fetch, feed_dict=feed_dict)
         except tf.errors.OutOfRangeError:
@@ -629,7 +639,8 @@ class RRI(object):
                 fd['qd_size'][b], step[b], is_stop[b], total_offset[b]))
               print('qid: {}, docid: {}'.format(fd['qid'][b], fd['docid'][b]))
               print(location[b, :step[b]+1])
-              print(np.max(match_matrix[b][:fd['qd_size'][b, 1], :fd['qd_size'][b, 0]], axis=1))
+              print(np.sum(match_matrix[b][:fd['qd_size'][b, 1], :fd['qd_size'][b, 0]], axis=1))
+              print(np.sum(match_matrix[b][:fd['qd_size'][b, 1], :fd['qd_size'][b, 0]], axis=0))
               bcont = input('break? y for yes:')
               if bcont == 'y':
                 break
@@ -884,6 +895,7 @@ def train_test():
     'save_model': args.save_model_path, 
     'summary_path': args.tf_summary_path,
     'tfrecord': args.tfrecord,
+    'unsupervised': False,
   }
   if args.config != None:
     model_config_.update(model_config)
@@ -894,12 +906,13 @@ def train_test():
     print('train query: {}, test query: {}'.format(len(train_X), len(test_X)))
   for e in rri.fit_iterable(train_X, train_y):
     start = time.time()
-    loss, acc = rri.test(test_X, test_y)
     if args.format == 'ir':
       ranks, _ = rri.decision_function(test_X_judge, test_y_judge)
       scores = evaluate(ranks, test_qd_judge, metric=ndcg, top_k=20)
       avg_score = np.mean(list(scores.values()))
+      loss, acc = 0, 0
     elif args.format == 'text':
+      loss, acc = rri.test(test_X, test_y)
       avg_score = None
     print('\t{:>7}:{:>5.3f}:{:>5.3f}:{:>5.3f}'
       .format('test_{:>3.1f}'.format((time.time()-start)/60), 
