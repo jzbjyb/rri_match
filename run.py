@@ -357,7 +357,6 @@ class RRI(object):
             parse_fn = RRI.parse_tfexample_fn_pairwise
           if is_train:
             dataset = dataset.shuffle(buffer_size=1)
-            #dataset = dataset.repeat()
           dataset = dataset.interleave(tf.data.TFRecordDataset, cycle_length=1, block_length=1)
           if paradigm == 'pointwise':
             dataset = dataset.map(functools.partial(parse_fn, 
@@ -365,12 +364,16 @@ class RRI(object):
           elif paradigm == 'pairwise':
             dataset = dataset.flat_map(functools.partial(parse_fn, 
               max_q_len=self.max_q_len, max_d_len=self.max_d_len))
-          dataset = dataset.prefetch(self.batch_size)
           if is_train:
-            dataset = dataset.shuffle(buffer_size=1)
+            dataset = dataset.shuffle(buffer_size=10000)
           else:
             pass
             dataset = dataset
+          if is_train and self.batch_num:
+              # If we go through all the samples using batch_num, we don't need to re-initialize 
+              # iterator of train dataset, which means that we need the repeat the dataset.
+              dataset = dataset.repeat()
+          dataset = dataset.prefetch(self.batch_size)
           dataset = dataset.padded_batch(self.batch_size, padded_shapes=dataset.output_shapes)
           return dataset
         # name pattern of the input tfrecord file
@@ -387,11 +390,17 @@ class RRI(object):
         train_dataset = data_transform(train_dataset, self.paradigm, is_train=True)
         test_dataset = data_transform(test_dataset, self.paradigm, is_train=False)
         decision_dataset = data_transform(decision_dataset, 'pointwise', is_train=False)
-        dataset_iterator = tf.data.Iterator.from_structure(
+        #dataset_iterator = tf.data.Iterator.from_structure(
+        #  train_dataset.output_types, train_dataset.output_shapes)
+        #self.train_data_init_op = dataset_iterator.make_initializer(train_dataset)
+        #self.test_data_init_op = dataset_iterator.make_initializer(test_dataset)
+        #self.decision_data_init_op = dataset_iterator.make_initializer(decision_dataset)
+        self.handle = tf.placeholder(tf.string, shape=[])
+        dataset_iterator = tf.data.Iterator.from_string_handle(self.handle, 
           train_dataset.output_types, train_dataset.output_shapes)
-        self.train_data_init_op = dataset_iterator.make_initializer(train_dataset)
-        self.test_data_init_op = dataset_iterator.make_initializer(test_dataset)
-        self.decision_data_init_op = dataset_iterator.make_initializer(decision_dataset)
+        self.train_data_init_op = train_dataset.make_initializable_iterator()
+        self.test_data_init_op = test_dataset.make_initializable_iterator()
+        self.decision_data_init_op = decision_dataset.make_initializable_iterator()
         self.query, self.doc, self.qd_size, self.relevance, \
           self.qid, self.docid = dataset_iterator.get_next()
         self.query = tf.cast(self.query, dtype=tf.int32)
@@ -405,17 +414,18 @@ class RRI(object):
       self.word_vector_variable = tf.get_variable('word_vector', self.word_vector.shape,
         initializer=tf.constant_initializer(self.word_vector), 
         trainable=self.word_vector_trainable)
+      word_vector_variable = self.word_vector_variable
       if self.oov_word_vector != None:
         # Don't train OOV words which are all located at the end of the word_vector matrix.
         print('don\'t train {} OOV word vector'.format(self.oov_word_vector))
-        self.word_vector_variable = tf.concat([self.word_vector_variable[:-self.oov_word_vector],
-          tf.stop_gradient(self.word_vector_variable[-self.oov_word_vector:])], axis=0)
+        word_vector_variable = tf.concat([word_vector_variable[:-self.oov_word_vector],
+          tf.stop_gradient(word_vector_variable[-self.oov_word_vector:])], axis=0)
       if self.use_pad_word:
         # Prepend a zero embedding at the first position of word_vector_variable.
         # Note that all the word inds need to be added 1 to be consistent with this change.
         print('prepend a pad_word at the word vectors')
-        self.word_vector_variable = tf.concat([tf.zeros_like(self.word_vector_variable[:1]),
-          self.word_vector_variable], axis=0)
+        word_vector_variable = tf.concat([tf.zeros_like(word_vector_variable[:1]),
+          word_vector_variable], axis=0)
         bs = tf.shape(self.doc)[0]
         max_q_len = tf.shape(self.query)[1]
         max_d_len = tf.shape(self.doc)[1]
@@ -429,7 +439,7 @@ class RRI(object):
     with vs.variable_scope('Arch'):
       self.outputs, self.rri_info = \
         rri(query, doc, tf.reverse(self.qd_size, [1]), max_jump_step=self.max_jump_step,
-          word_vector=self.word_vector_variable, interaction=self.interaction, glimpse=self.glimpse,
+          word_vector=word_vector_variable, interaction=self.interaction, glimpse=self.glimpse,
           glimpse_fix_size=self.glimpse_fix_size, min_density=self.min_density, use_ratio=self.use_ratio,
           min_jump_offset=self.min_jump_offset, max_jump_offset2=self.max_jump_offset2,
            jump=self.jump, represent=self.represent, 
@@ -493,6 +503,12 @@ class RRI(object):
       raise ValueError('batch_size should be even in pairwise setting')
 
 
+  def get_w2v(self):
+    if not hasattr(self, 'session_'):
+      raise AttributeError(RRI.NOT_FIT_EXCEPTION)
+    return self.session_.run(self.word_vector_variable)
+
+
   def feed_dict_postprocess(self, fd, is_train=True):
     if not self.tfrecord:
       feed_dict = {self.query: fd['query'], self.doc: fd['doc'], self.qd_size: fd['qd_size'], 
@@ -500,7 +516,7 @@ class RRI(object):
       if 'relevance' in fd:
         feed_dict[self.relevance] = fd['relevance']
     else:
-      feed_dict = {}
+      feed_dict = fd
     if is_train:
       feed_dict[self.keep_prob_] = self.keep_prob
     else:
@@ -530,13 +546,17 @@ class RRI(object):
 
   def fit_iterable(self, X, y=None):
     def batcher_wrapper():
-      def tfrecord_batcher():
+      def tfrecord_batcher(batch_num=None):
+        bind = 0
         while True:
+          bind += 1
           yield None, 0
+          if batch_num and bind >= batch_num:
+            break
       if not self.tfrecord:
         return self.batcher(X, y, self.batch_size, use_permutation=True, batch_num=self.batch_num)
       else:
-        return tfrecord_batcher()
+        return tfrecord_batcher(batch_num=self.batch_num)
     trace_op, trace_graph = True, False
     # check params
     self.check_params()
@@ -557,14 +577,18 @@ class RRI(object):
       feed_time_all = 0
       loss_list, com_r_list, stop_r_list, total_offset_list, step_list = [], [], [], [], []
       if self.tfrecord:
-        self.session_.run(self.train_data_init_op, feed_dict={self.tfrecord_pattern: X})
+        train_handle = self.session_.run(self.train_data_init_op.string_handle())
+        if epoch == 1 or self.batch_num is None:
+          # When batch_num is used, we don't need to re-initialize the dataset.
+          self.session_.run(self.train_data_init_op.initializer, 
+            feed_dict={self.tfrecord_pattern: X})
       #for i, (fd, feed_time) in enumerate(self.batcher(X, y, self.batch_size, use_permutation=True, batch_num=self.batch_num)):
       for i, (fd, feed_time) in enumerate(batcher_wrapper()):
         feed_time_all += feed_time
         if not self.tfrecord:
           batch_size = len(fd['query'])
         else:
-          fd = {}
+          fd = {self.handle: train_handle}
           batch_size = None
         # tfrecord also need feed_dict, like keep_prob
         feed_dict = self.feed_dict_postprocess(fd, is_train=True)
@@ -582,7 +606,7 @@ class RRI(object):
             print('adding run metadata for {}'.format(i))
             if trace_op:
               profiler_opts = builder(builder.time_and_memory()).order_by('micros').build()
-              tf.profiler.profile(self.graph_, run_meta=run_metadata, cmd='scope', options=profiler_opts)
+              tf.profiler.profile(self.graph_, run_meta=run_metadata, cmd='op', options=profiler_opts)
               input('press to continue')
             if trace_graph:
               #profiler.add_step(step=i, run_meta=run_metadata)
@@ -599,6 +623,8 @@ class RRI(object):
             fd['qid'], fd['docid'], fd['qd_size'] = \
               self.session_.run(fetch, feed_dict=feed_dict)
         except tf.errors.OutOfRangeError:
+          if self.batch_num:
+            raise Exception('Tfrecord OutOfRange is not expected because you are using batch_num')
           break
         end_time = time.time()
         loss_list.append(loss)
@@ -639,8 +665,8 @@ class RRI(object):
                 fd['qd_size'][b], step[b], is_stop[b], total_offset[b]))
               print('qid: {}, docid: {}'.format(fd['qid'][b], fd['docid'][b]))
               print(location[b, :step[b]+1])
-              print(np.sum(match_matrix[b][:fd['qd_size'][b, 1], :fd['qd_size'][b, 0]], axis=1))
-              print(np.sum(match_matrix[b][:fd['qd_size'][b, 1], :fd['qd_size'][b, 0]], axis=0))
+              print(np.max(match_matrix[b][:fd['qd_size'][b, 1], :fd['qd_size'][b, 0]], axis=1))
+              print(np.max(match_matrix[b][:fd['qd_size'][b, 1], :fd['qd_size'][b, 0]], axis=0))
               bcont = input('break? y for yes:')
               if bcont == 'y':
                 break
@@ -670,10 +696,13 @@ class RRI(object):
     if not hasattr(self, 'session_'):
       raise AttributeError(RRI.NOT_FIT_EXCEPTION)
     loss_list, acc_list = [], []
-    self.session_.run(self.test_data_init_op, feed_dict={self.tfrecord_pattern: test_file_pattern})
+    test_handle = self.session_.run(self.test_data_init_op.string_handle())
+    self.session_.run(self.test_data_init_op.initializer, 
+      feed_dict={self.tfrecord_pattern: test_file_pattern})
     while True:
       try:
-        loss, _, acc = self.session_.run([self.loss, self.acc_op, self.acc])
+        loss, _, acc = self.session_.run([self.loss, self.acc_op, self.acc], 
+          feed_dict={self.handle: test_handle})
         acc_list.append(acc)
         loss_list.append(loss)
       except tf.errors.OutOfRangeError:
@@ -714,14 +743,16 @@ class RRI(object):
     if not hasattr(self, 'session_'):
       raise AttributeError(RRI.NOT_FIT_EXCEPTION)
     q_list, doc_list, score_list, loss_list = [], [], [], []
-    self.session_.run(self.decision_data_init_op, 
+    decision_handle = self.session_.run(self.decision_data_init_op.string_handle())
+    self.session_.run(self.decision_data_init_op.initializer, 
       feed_dict={self.tfrecord_pattern: decision_file_pattern})
     while True:
       try:
         if self.loss_func == 'classification' and self.rel_level != 2:
           raise Exception(RRI.DECISION_EXCEPTION)
         scores, loss, qid, docid = \
-          self.session_.run([self.scores, self.loss, self.qid, self.docid])
+          self.session_.run([self.scores, self.loss, self.qid, self.docid], 
+            feed_dict={self.handle: decision_handle})
         loss_list.append(loss)
         score_list.extend(scores)
         [q_list.append(q.decode('utf-8')) for q in qid]
@@ -914,6 +945,9 @@ def train_test():
     elif args.format == 'text':
       loss, acc = rri.test(test_X, test_y)
       avg_score = None
+    w2v_update = rri.get_w2v()
+    wv.update(w2v_update)
+    wv.save_to_file('w2v_update')
     print('\t{:>7}:{:>5.3f}:{:>5.3f}:{:>5.3f}'
       .format('test_{:>3.1f}'.format((time.time()-start)/60), 
         loss, acc, avg_score), end='', flush=True)

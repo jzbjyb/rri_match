@@ -457,7 +457,7 @@ def gen_tfrecord():
         q, d1, d2, r = sample
         qb = q.encode('utf-8')
         d1b = d1.encode('utf-8')
-        d2b = d1.encode('utf-8')
+        d2b = d2.encode('utf-8')
         features['docid1'] = tf.train.Feature(bytes_list=tf.train.BytesList(value=[d1b]))
         features['docid2'] = tf.train.Feature(bytes_list=tf.train.BytesList(value=[d2b]))
         features['doc1'] = tf.train.Feature(int64_list=tf.train.Int64List(value=doc_raw[d1]))

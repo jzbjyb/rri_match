@@ -227,16 +227,13 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
             state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, lambda: state_ta.write(0, tf.zeros([bs, 1])))
         elif represent in {'interaction_cnn_hard'}:
             state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, lambda: state_ta.write(0, tf.zeros([bs, 200])))
-        start = tf.cast(tf.floor(location[:, :2]), dtype=tf.int32)
-        offset = tf.cast(tf.floor(location[:, 2:]), dtype=tf.int32)
-        d_start, d_offset = start[:, 0], offset[:, 0]
-        q_start, q_offset = start[:, 1], offset[:, 1]
+        d_start, q_start, d_offset, q_offset = location
         d_region = batch_slice(doc, d_start, d_offset, pad_values=0)
         q_region = batch_slice(query, q_start, q_offset, pad_values=0)
         d_region = tf.nn.embedding_lookup(word_vector, d_region)
         q_region = tf.nn.embedding_lookup(word_vector, q_region)
         if represent == 'interaction_cnn_hard':
-            # this implementation seems to be slow, wo don't use it
+            # This implementation seems to be slow, wo don't use it
             if 'max_jump_offset' not in kwargs or 'max_jump_offset2' not in kwargs:
                 raise ValueError('max_jump_offset and max_jump_offset2 must be set when InterCNN is used')
             max_jump_offset = kwargs['max_jump_offset']
