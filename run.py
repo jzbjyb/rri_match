@@ -297,7 +297,12 @@ class RRI(object):
     query = query[:, :max_q_len]
     doc = doc[:, :max_d_len]
     qd_size = tf.minimum(qd_size, [[max_q_len, max_d_len]])
-    return tf.data.Dataset.from_tensor_slices((query, doc, qd_size, relevance, qid, docid))
+    #return tf.data.Dataset.from_tensor_slices((query, doc, qd_size, relevance, qid, docid))
+    return query, doc, qd_size, relevance, qid, docid
+
+  @staticmethod
+  def flat_map_tensor(*args):
+    return tf.data.Dataset.from_tensor_slices(args)
 
 
   @staticmethod
@@ -362,13 +367,15 @@ class RRI(object):
             dataset = dataset.map(functools.partial(parse_fn, 
               max_q_len=self.max_q_len, max_d_len=self.max_d_len), num_parallel_calls=4)
           elif paradigm == 'pairwise':
-            dataset = dataset.flat_map(functools.partial(parse_fn, 
-              max_q_len=self.max_q_len, max_d_len=self.max_d_len))
+            dataset = dataset.map(functools.partial(parse_fn, 
+              max_q_len=self.max_q_len, max_d_len=self.max_d_len), num_parallel_calls=4)
           if is_train:
             dataset = dataset.shuffle(buffer_size=10000)
           else:
-            pass
             dataset = dataset
+          if paradigm == 'pairwise':
+            # flatten pairwise samples
+            dataset = dataset.flat_map(RRI.flat_map_tensor)
           if is_train and self.batch_num:
               # If we go through all the samples using batch_num, we don't need to re-initialize 
               # iterator of train dataset, which means that we need the repeat the dataset.
@@ -947,7 +954,7 @@ def train_test():
       avg_score = None
     w2v_update = rri.get_w2v()
     wv.update(w2v_update)
-    wv.save_to_file('w2v_update')
+    wv.save_to_file('w2v_update_no_oov')
     print('\t{:>7}:{:>5.3f}:{:>5.3f}:{:>5.3f}'
       .format('test_{:>3.1f}'.format((time.time()-start)/60), 
         loss, acc, avg_score), end='', flush=True)
