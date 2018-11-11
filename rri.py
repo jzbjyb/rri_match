@@ -226,28 +226,42 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
         if represent in {'rnn_hard', 'cnn_hard'}:
             state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, lambda: state_ta.write(0, tf.zeros([bs, 1])))
         elif represent in {'interaction_cnn_hard'}:
-            state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, lambda: state_ta.write(0, tf.zeros([bs, 200])))
+            # WARN, 100 is for apple
+            state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, lambda: state_ta.write(0, tf.zeros([bs, 100])))
         d_start, q_start, d_offset, q_offset = location
+        # WARN: this comment is for apple projcet
+        '''
         d_region = batch_slice(doc, d_start, d_offset, pad_values=0)
         q_region = batch_slice(query, q_start, q_offset, pad_values=0)
         d_region = tf.nn.embedding_lookup(word_vector, d_region)
         q_region = tf.nn.embedding_lookup(word_vector, q_region)
+        '''
+        d_region, q_region = None, None
         if represent == 'interaction_cnn_hard':
             # This implementation seems to be slow, wo don't use it
             if 'max_jump_offset' not in kwargs or 'max_jump_offset2' not in kwargs:
                 raise ValueError('max_jump_offset and max_jump_offset2 must be set when InterCNN is used')
             max_jump_offset = kwargs['max_jump_offset']
             max_jump_offset2 = kwargs['max_jump_offset2']
+            # WARN: this comment is for apple projcet
+            '''
             local_match_matrix = tf.matmul(d_region, tf.transpose(q_region, [0, 2, 1]))
             local_match_matrix = tf.pad(local_match_matrix, 
                 [[0, 0], [0, max_jump_offset-tf.shape(local_match_matrix)[1]], 
                 [0, max_jump_offset2-tf.shape(local_match_matrix)[2]]], 'CONSTANT', constant_values=0)
             local_match_matrix.set_shape([None, max_jump_offset, max_jump_offset2])
             local_match_matrix = tf.expand_dims(local_match_matrix, 3)
+            '''
+            local_match_matrix = tf.pad(match_matrix, 
+                [[0, 0], [0, max_jump_offset-tf.shape(match_matrix)[1]], 
+                [0, max_jump_offset2-tf.shape(match_matrix)[2]]], 'CONSTANT', constant_values=0)
+            local_match_matrix.set_shape([None, max_jump_offset, max_jump_offset2])
+            local_match_matrix = tf.expand_dims(local_match_matrix, 3)
             with vs.variable_scope('InterCNN'):
                 inter_dpool_index = DynamicMaxPooling.dynamic_pooling_index_2d(d_offset, q_offset, 
                     max_jump_offset, max_jump_offset2)
-                inter_repr = cnn(local_match_matrix, architecture=[(5, 5, 1, 8), (5, 5)], activation='relu',
+                # WARN: this (3, 3, 1, 4) is for apple
+                inter_repr = cnn(local_match_matrix, architecture=[(3, 3, 1, 4), (5, 5)], activation='relu',
                 #inter_repr = cnn(local_match_matrix, architecture=[(5, 5, 1, 16), (500, 10), (5, 5, 16, 16), (1, 1), (5, 5, 16, 16), (10, 1), (5, 5, 16, 100), (25, 10)], activation='relu',
                     dpool_index=inter_dpool_index)
                 representation = tf.reshape(inter_repr, [bs, -1])

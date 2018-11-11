@@ -959,6 +959,9 @@ def train_test():
     #test_X_judge, test_y_judge = test_X_judge[:10], test_y_judge[:10]
     print('train query: {}, test query: {}'.format(len(train_X), len(test_X)))
   for i, e in enumerate(rri.fit_iterable(train_X, train_y)):
+    i = i+1
+    if i % 10 != 0:
+      continue
     start = time.time()
     if args.format == 'ir':
       ranks, loss, acc = rri.decision_function(test_X_judge, test_y_judge)
@@ -969,7 +972,7 @@ def train_test():
       ranks, loss, acc = rri.decision_function(test_X_judge, test_y_judge)
       scores = evaluate(ranks, test_qd_judge, metric=average_precision, top_k=10000)
       avg_score = np.mean(list(scores.values()))
-    #json.dump(ranks, open('ranking/ranking.{}.json'.format(i), 'w'))
+    json.dump(ranks, open('ranking/ranking.{}.json'.format(i), 'w'))
     #w2v_update = rri.get_w2v()
     #wv.update(w2v_update)
     #wv.save_to_file('w2v_update')
