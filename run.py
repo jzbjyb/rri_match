@@ -1,10 +1,11 @@
 import argparse, logging, os, random, time, json, functools
 from itertools import groupby
 import numpy as np
+from tensorflow.python import debug as tf_debug
 from sklearn.base import BaseEstimator, ClassifierMixin
 import matplotlib.pyplot as plt
 from utils import Vocab, WordVector, load_prep_file, load_train_test_file, printoptions, load_judge_file
-from metric import evaluate, ndcg
+from metric import evaluate, ndcg, average_precision, precision
 from rri import rri
 from cnn import DynamicMaxPooling
 
@@ -12,6 +13,8 @@ if __name__ == '__main__':
   parser = argparse.ArgumentParser(description='run')
   parser.add_argument('-a', '--action', help='action', type=str, default='train_test')
   parser.add_argument('-c', '--config', help='config file', type=str, default=None)
+  parser.add_argument('--max_q_d_len', help='max query and doc length considered', type=str,
+    default='10:1000')
   parser.add_argument('-D', '--debug', help='whether to use debug log level', action='store_true')
   parser.add_argument('--disable_gpu', help='whether to disable GPU', action='store_true')
   parser.add_argument('--gpu', help='which GPU to use', type=str, default='0')
@@ -461,7 +464,7 @@ class RRI(object):
           shape=[self.rel_level], initializer=tf.constant_initializer())
         logits = tf.nn.bias_add(tf.matmul(self.outputs, logit_w), logit_b)
         self.scores = -tf.nn.softmax_cross_entropy_with_logits(
-          labels=tf.one_hot(self.ones_like(self.relevance)*(self.rel_level-1), self.rel_level), 
+          labels=tf.one_hot(tf.ones_like(self.relevance)*(self.rel_level-1), self.rel_level), 
           logits=logits)
         self.losses = tf.nn.softmax_cross_entropy_with_logits(
           labels=tf.one_hot(self.relevance, self.rel_level), logits=logits)
@@ -536,7 +539,9 @@ class RRI(object):
       self.graph_ = tf.Graph()
       with self.graph_.as_default():
         tf.set_random_seed(self.random_seed)
-        with vs.variable_scope('RRI') as scope:
+        with vs.variable_scope('RRI', initializer=
+          tf.truncated_normal_initializer(mean=0.0, stddev=1e-1, dtype=tf.float32, 
+            seed=self.random_seed)) as scope:
           self.build_graph()
       config = tf.ConfigProto()
       config.allow_soft_placement = True
@@ -549,6 +554,7 @@ class RRI(object):
       else: # initialize model
         self.session_.run(self.init_all_vars)
         self.session_.run(self.init_all_vars_local)
+      #self.session_ = tf_debug.LocalCLIDebugWrapperSession(self.session_)
 
 
   def fit_iterable(self, X, y=None):
@@ -569,6 +575,9 @@ class RRI(object):
     self.check_params()
     # init graph and session
     self.init_graph_session()
+    #for i in self.graph_.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='RRI'):
+    #  print(i, i.eval(self.session_))
+    #input('continue')
     # profile
     builder = option_builder.ProfileOptionBuilder
     #profiler = model_analyzer.Profiler(graph=self.graph_)
@@ -600,13 +609,13 @@ class RRI(object):
         # tfrecord also need feed_dict, like keep_prob
         feed_dict = self.feed_dict_postprocess(fd, is_train=True)
         fetch = [self.rri_info['step'], self.rri_info['location'], self.rri_info['match_matrix'],
-             self.loss, self.rri_info['complete_ratio'], self.rri_info['is_stop'], self.rri_info['stop_ratio'], 
-             self.rri_info['total_offset'], self.rri_info['signal'], self.trainer, 
+             self.loss, self.scores, self.rri_info['complete_ratio'], self.rri_info['is_stop'], self.rri_info['stop_ratio'], 
+             self.rri_info['total_offset'], self.rri_info['signal'], self.rri_info['states'], self.trainer, 
              self.qid, self.docid, self.qd_size]
         start_time = time.time()
         try:
           if self.summary_path != None and i % 1 == 0: # run statistics
-            step, location, match_matrix, loss, com_r, is_stop, stop_r, total_offset, signal, _, \
+            step, location, match_matrix, loss, scores, com_r, is_stop, stop_r, total_offset, signal, states, _, \
             fd['qid'], fd['docid'], fd['qd_size'] = \
               self.session_.run(fetch, feed_dict=feed_dict, options=run_options, run_metadata=run_metadata)
             self.train_writer.add_run_metadata(run_metadata, 'step%d' % i)
@@ -626,7 +635,7 @@ class RRI(object):
               trace_file.write(trace.generate_chrome_trace_format())
             print('profile run metadata for {}'.format(i))
           else:
-            step, location, match_matrix, loss, com_r, is_stop, stop_r, total_offset, signal, _, \
+            step, location, match_matrix, loss, scores, com_r, is_stop, stop_r, total_offset, signal, states, _, \
             fd['qid'], fd['docid'], fd['qd_size'] = \
               self.session_.run(fetch, feed_dict=feed_dict)
         except tf.errors.OutOfRangeError:
@@ -674,6 +683,10 @@ class RRI(object):
               print(location[b, :step[b]+1])
               print(np.max(match_matrix[b][:fd['qd_size'][b, 1], :fd['qd_size'][b, 0]], axis=1))
               print(np.max(match_matrix[b][:fd['qd_size'][b, 1], :fd['qd_size'][b, 0]], axis=0))
+              #print(np.max(match_matrix[b], axis=1))
+              #print(np.max(match_matrix[b], axis=0))
+              #print(states[1, b])
+              #print(scores[b])
               bcont = input('break? y for yes:')
               if bcont == 'y':
                 break
@@ -749,7 +762,7 @@ class RRI(object):
     self.check_params()
     if not hasattr(self, 'session_'):
       raise AttributeError(RRI.NOT_FIT_EXCEPTION)
-    q_list, doc_list, score_list, loss_list = [], [], [], []
+    q_list, doc_list, score_list, loss_list, acc_list = [], [], [], [], []
     decision_handle = self.session_.run(self.decision_data_init_op.string_handle())
     self.session_.run(self.decision_data_init_op.initializer, 
       feed_dict={self.tfrecord_pattern: decision_file_pattern})
@@ -757,9 +770,10 @@ class RRI(object):
       try:
         if self.loss_func == 'classification' and self.rel_level != 2:
           raise Exception(RRI.DECISION_EXCEPTION)
-        scores, loss, qid, docid = \
-          self.session_.run([self.scores, self.loss, self.qid, self.docid], 
+        scores, loss, qid, docid, _, acc = \
+          self.session_.run([self.scores, self.loss, self.qid, self.docid, self.acc_op, self.acc], 
             feed_dict={self.handle: decision_handle})
+        acc_list.append(acc)
         loss_list.append(loss)
         score_list.extend(scores)
         [q_list.append(q.decode('utf-8')) for q in qid]
@@ -767,25 +781,27 @@ class RRI(object):
       except tf.errors.OutOfRangeError:
         break
     ranks = self.get_ranking(q_list, doc_list, score_list)
-    return ranks, np.mean(loss_list)
+    return ranks, np.mean(loss_list), np.mean(acc_list), np.mean(acc_list)
 
 
   def decision_function_placeholder(self, X, y=None):
     self.check_params()
     if not hasattr(self, 'session_'):
       raise AttributeError(RRI.NOT_FIT_EXCEPTION)
-    q_list, doc_list, score_list, loss_list = [], [], [], []
+    q_list, doc_list, score_list, loss_list, acc_list = [], [], [], [], []
     for i, (fd, feed_time) in enumerate(self.batcher(X, y, self.batch_size, use_permutation=False)):
       feed_dict = self.feed_dict_postprocess(fd, is_train=False)
       if self.loss_func == 'classification' and self.rel_level != 2:
         raise Exception(RRI.DECISION_EXCEPTION)
-      scores, loss, = self.session_.run([self.scores, self.loss], feed_dict=feed_dict)
+      scores, loss, _, acc = self.session_.run([self.scores, self.loss, self.acc_op, self.acc], 
+        feed_dict=feed_dict)
+      acc_list.append(acc)
       loss_list.append(loss)
       score_list.extend(scores)
       [q_list.append(q) for q in fd['qid']]
       [doc_list.append(d) for d in fd['docid']]
     ranks = self.get_ranking(q_list, doc_list, score_list)
-    return ranks, np.mean(loss_list)
+    return ranks, np.mean(loss_list), np.mean(acc_list)
 
 
 def train_test():
@@ -799,8 +815,7 @@ def train_test():
     if r >= rel_level:
       return rel_level - 1
     return r
-  max_q_len_consider = 10
-  max_d_len_consider = 1000
+  max_q_len_consider, max_d_len_consider = [int(l) for l in args.max_q_d_len.split(':')]  
   if args.config != None:
     model_config = json.load(open(args.config))
     print('model config: {}'.format(model_config))
@@ -830,12 +845,13 @@ def train_test():
     doc_raw = load_prep_file(doc_file, file_format=args.format)
     if args.format == 'ir':
       query_raw = load_prep_file(query_file, file_format=args.format)
+      truncate_len = max_d_len_consider
     else:
       query_raw = doc_raw
+      truncate_len = max(max_q_len_consider, max_d_len_consider)
     print('truncate long document')
     d_long_count = 0
     avg_doc_len, avg_truncate_doc_len = 0, 0
-    truncate_len = max(max_q_len_consider, max_d_len_consider)
     for d in doc_raw:
       avg_doc_len += len(doc_raw[d])
       if len(doc_raw[d]) > truncate_len:
@@ -872,7 +888,7 @@ def train_test():
       test_X_judge, test_y_judge, _ = data_assemble(test_file_judge, query_raw, doc_raw, max_q_len, max_d_len, 
                         relevance_mapper=relevance_mapper)
     else:
-      text_X_judge, test_y_judge = test_X, test_y
+      test_X_judge, test_y_judge = test_X, test_y
     print('number of training samples: {}'.format(sum([len(x['query']) for x in train_X])))
   else:
     '''
@@ -942,19 +958,21 @@ def train_test():
     #train_X, train_y, test_X, test_y = train_X[:10], train_y[:10], test_X[:10], test_y[:10]
     #test_X_judge, test_y_judge = test_X_judge[:10], test_y_judge[:10]
     print('train query: {}, test query: {}'.format(len(train_X), len(test_X)))
-  for e in rri.fit_iterable(train_X, train_y):
+  for i, e in enumerate(rri.fit_iterable(train_X, train_y)):
     start = time.time()
     if args.format == 'ir':
-      ranks, _ = rri.decision_function(test_X_judge, test_y_judge)
+      ranks, loss, acc = rri.decision_function(test_X_judge, test_y_judge)
       scores = evaluate(ranks, test_qd_judge, metric=ndcg, top_k=20)
       avg_score = np.mean(list(scores.values()))
-      loss, acc = 0, 0
     elif args.format == 'text':
-      loss, acc = rri.test(test_X, test_y)
-      avg_score = None
-    w2v_update = rri.get_w2v()
-    wv.update(w2v_update)
-    wv.save_to_file('w2v_update_no_oov')
+      #loss, acc = rri.test(test_X, test_y)
+      ranks, loss, acc = rri.decision_function(test_X_judge, test_y_judge)
+      scores = evaluate(ranks, test_qd_judge, metric=average_precision, top_k=10000)
+      avg_score = np.mean(list(scores.values()))
+    #json.dump(ranks, open('ranking/ranking.{}.json'.format(i), 'w'))
+    #w2v_update = rri.get_w2v()
+    #wv.update(w2v_update)
+    #wv.save_to_file('w2v_update')
     print('\t{:>7}:{:>5.3f}:{:>5.3f}:{:>5.3f}'
       .format('test_{:>3.1f}'.format((time.time()-start)/60), 
         loss, acc, avg_score), end='', flush=True)

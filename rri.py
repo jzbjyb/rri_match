@@ -512,4 +512,5 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
                 signal = tf.reshape(concat_repr, [bs, 200])
         return signal, {'step': step, 'location': location, 'match_matrix': match_matrix, 
                         'complete_ratio': complete_ratio, 'is_stop': is_stop, 'stop_ratio': stop_ratio,
-                        'doc_emb': doc_emb, 'total_offset': total_offset, 'signal': signal}
+                        'doc_emb': doc_emb, 'total_offset': total_offset, 'signal': signal, 
+                        'states': states}

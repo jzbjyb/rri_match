@@ -180,8 +180,8 @@ def preprocess():
 
 def word_vector_transform():
   print('loading word vector ...')
-  wv = WordVector(filepath=args.word_vector_path, first_line=True)
-  vocab = Vocab(filepath=os.path.join(args.data_dir, 'vocab'), file_format='ir')
+  wv = WordVector(filepath=args.word_vector_path, first_line=False)
+  vocab = Vocab(filepath=os.path.join(args.data_dir, 'vocab'), file_format='text')
   print('transforming ...')
   wv.transform(vocab.get_word_list(), oov_filepath=os.path.join(args.data_dir, 'oov.txt'), 
     oov_at_end=True)
@@ -476,6 +476,16 @@ def gen_tfrecord():
       writers[_pick_output_shard()].write(example.SerializeToString())
 
 
+def drop_negative():
+  keep = 0.15
+  train_filename = os.path.join(args.data_dir, 'train.prep.{}'.format(args.paradigm))
+  out_filename = os.path.join(args.data_dir, 'train.prep.neg{}.{}'.format(keep, args.paradigm))
+  samples = load_train_test_file(train_filename, file_format=args.format, reverse=args.reverse)
+  save_train_test_file(
+    [s for s in samples if (s[-1] > 0) or (random.random() <= keep)], out_filename, 
+    file_format=args.format)
+
+
 if __name__ == '__main__':
   if args.action == 'prep':
     preprocess()
@@ -503,5 +513,8 @@ if __name__ == '__main__':
     gen_pairwise()
   elif args.action == 'gen_tfrecord':
     gen_tfrecord()
+  elif args.action == 'drop_negative':
+    # random drop some negative samples to make training balanced
+    drop_negative()
   else:
     raise NotImplementedError('action not supported')

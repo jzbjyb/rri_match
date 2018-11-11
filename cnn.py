@@ -139,8 +139,7 @@ def cnn(x, architecture=[(3, 3, 1, 16), (1, 2, 2, 1)], activation='relu', dpool_
         pool_size = architecture[i*2+1]
         with vs.variable_scope('conv{}'.format(layer)):
             #kernel = tf.Variable(tf.truncated_normal(conv_size, dtype=tf.float32, stddev=1e-1), name='weights')
-            kernel = tf.get_variable('weights', shape=conv_size, dtype=tf.float32, initializer=\
-                                     tf.truncated_normal_initializer(mean=0.0, stddev=1e-1, dtype=tf.float32))
+            kernel = tf.get_variable('weights', shape=conv_size, dtype=tf.float32, initializer=None)
             tf.add_to_collection('conv_kernel', kernel)
             if conv_dim == 1:
                 conv = tf.nn.conv1d(last, kernel, 1, padding='SAME')

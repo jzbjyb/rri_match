@@ -2,6 +2,7 @@ import contextlib, sys, re, logging, time, html
 from collections import defaultdict
 import numpy as np
 import tensorflow as tf
+from sklearn.decomposition import TruncatedSVD
 from bs4 import BeautifulSoup, UnicodeDammit
 from boilerpipe.extract import Extractor
 from nltk.tokenize import word_tokenize
@@ -129,13 +130,21 @@ def load_train_test_file(filepath, file_format='ir', reverse=False):
     return samples
 
 
-def save_train_test_file(samples, filepath):
+def save_train_test_file(samples, filepath, file_format='ir'):
     with open(filepath, 'w') as fp:
         for s in samples:
-            if filepath.endswith('pointwise'):
-                fp.write('{}\t{}\t{}\n'.format(s[0], s[1], s[2]))
-            elif filepath.endswith('pairwise'):
-                fp.write('{}\t{}\t{}\t{}\n'.format(s[0], s[1], s[2], s[3]))
+            if file_format == 'ir':
+                if filepath.endswith('pointwise'):
+                    fp.write('{}\n'.format('\t'.join(str(i) for i in s)))
+                elif filepath.endswith('pairwise'):
+                    fp.write('{}\n'.format('\t'.join(str(i) for i in s)))
+                else:
+                    raise Exception()
+            elif file_format == 'text':
+                if filepath.endswith('pointwise'):
+                    fp.write('{} {} {}\n'.format(s[2], s[0], s[1]))
+                else:
+                    raise Exception()
 
 
 def load_word_vector(filepath, is_binary=False, first_line=True):
@@ -387,6 +396,13 @@ class WordVector(object):
     def update(self, new_vectors):
         if new_vectors.shape != self.vectors.shape:
             raise Exception('shape is not correct')
+        self.vectors = new_vectors
+
+
+    def svd(self, n_components=10):
+        svd = TruncatedSVD(n_components=n_components, algorithm='arpack')
+        new_vectors = svd.fit_transform(self.vectors)
+        self.dim = new_vectors.shape[1]
         self.vectors = new_vectors
 
 
