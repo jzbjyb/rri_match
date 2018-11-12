@@ -459,7 +459,8 @@ class RRI(object):
     if self.loss_func == 'classification':
       with vs.variable_scope('ClassificationLoss'):
         logit_w = tf.get_variable('logit_weight', 
-          shape=[self.outputs.get_shape()[1], self.rel_level], initializer=initializer)
+          shape=[self.outputs.get_shape()[1], self.rel_level], 
+            initializer=tf.constant_initializer([[0.0] * (self.rel_level-1) + [1.0]]))
         logit_b = tf.get_variable('logit_bias', 
           shape=[self.rel_level], initializer=tf.constant_initializer())
         logits = tf.nn.bias_add(tf.matmul(self.outputs, logit_w), logit_b)
@@ -960,7 +961,7 @@ def train_test():
     print('train query: {}, test query: {}'.format(len(train_X), len(test_X)))
   for i, e in enumerate(rri.fit_iterable(train_X, train_y)):
     i = i+1
-    if i % 10 != 0:
+    if i % 1 != 0:
       continue
     start = time.time()
     if args.format == 'ir':

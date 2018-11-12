@@ -159,12 +159,14 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
         # initialize the first element of state_ta
         state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, 
             lambda: state_ta.write(0, tf.zeros([bs, 1], dtype=tf.float32)))
-        d_start, d_offset = location[0], location[2]
+        d_start, d_offset, q_offset = location[0], location[2], location[3]
         local_match_matrix = batch_slice(match_matrix, d_start, d_offset, pad_values=0)
         local_match_matrix = tf.maximum(local_match_matrix, 0)
         term_freq = tf.reduce_sum(local_match_matrix, axis=1)
         term_freq = tf.log(term_freq + 1)
         representation = tf.reduce_sum(term_freq, axis=1, keep_dims=True)
+        representation = representation / \
+            tf.expand_dims(tf.cast(q_offset, dtype=term_freq.dtype)+DELTA, axis=1)
     elif represent == 'mean_pooling':
         '''
         Calculate mean similarity between document words and each query word. This is for
