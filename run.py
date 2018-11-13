@@ -40,6 +40,7 @@ os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 if args.disable_gpu:
   print('diable GPU')
   os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 
 import tensorflow as tf
 from tensorflow.python.ops import variable_scope as vs
@@ -782,7 +783,7 @@ class RRI(object):
       except tf.errors.OutOfRangeError:
         break
     ranks = self.get_ranking(q_list, doc_list, score_list)
-    return ranks, np.mean(loss_list), np.mean(acc_list), np.mean(acc_list)
+    return ranks, np.mean(loss_list), np.mean(acc_list)
 
 
   def decision_function_placeholder(self, X, y=None):
@@ -974,9 +975,10 @@ def train_test():
       scores = evaluate(ranks, test_qd_judge, metric=average_precision, top_k=10000)
       avg_score = np.mean(list(scores.values()))
     json.dump(ranks, open('ranking/ranking.{}.json'.format(i), 'w'))
-    #w2v_update = rri.get_w2v()
-    #wv.update(w2v_update)
-    #wv.save_to_file('w2v_update')
+    if i % 5 == 0:
+      w2v_update = rri.get_w2v()
+      wv.update(w2v_update)
+      wv.save_to_file('w2v_update')
     print('\t{:>7}:{:>5.3f}:{:>5.3f}:{:>5.3f}'
       .format('test_{:>3.1f}'.format((time.time()-start)/60), 
         loss, acc, avg_score), end='', flush=True)
