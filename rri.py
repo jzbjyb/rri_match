@@ -395,10 +395,23 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
                                 tf.sqrt(tf.reduce_sum(query_emb * query_emb, axis=2, keep_dims=True))
         if min_density != None:
             if use_ratio:
-                density = tf.reduce_max(match_matrix, 2)
-                mean_density = tf.reduce_mean(density, 1)
-                max_density = tf.reduce_max(density, 1)
-                min_density = (max_density - mean_density) * min_density + mean_density
+                '''
+                # using max min value is not guaranteed to find the threshold
+                with vs.variable_scope('RatioDensity'):
+                    density = tf.reduce_max(match_matrix, 2)
+                    mean_density = tf.reduce_mean(density, 1)
+                    max_density = tf.reduce_max(density, 1)
+                    min_density = (max_density - mean_density) * min_density + mean_density
+                '''
+                # only kep top min_density percentage words with maximum density in the document
+                with vs.variable_scope('PercentileDensity'):
+                    density = tf.reduce_max(match_matrix, 2)
+                    density, _ = tf.nn.top_k(density, 
+                        tf.cast(tf.cast(max_d_len, dtype=tf.float32)*min_density, dtype=tf.int32))
+                    top_k = tf.cast(tf.ceil(tf.cast(dq_size_t[0], dtype=tf.float32)*min_density), 
+                        dtype=tf.int32) - 1
+                    min_density = tf.squeeze(batch_slice(density, top_k, 
+                        tf.ones_like(top_k), pad_values=0))
             else:
                 min_density = tf.ones_like(dq_size[:, 0], dtype=tf.float32) * min_density
     with vs.variable_scope('SelectiveJump'):
@@ -540,4 +553,4 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
         return signal, {'step': step, 'location': location, 'match_matrix': match_matrix, 
                         'complete_ratio': complete_ratio, 'is_stop': is_stop, 'stop_ratio': stop_ratio,
                         'doc_emb': doc_emb, 'total_offset': total_offset, 'signal': signal, 
-                        'states': states}
+                        'states': states, 'min_density': min_density}

@@ -1,4 +1,4 @@
-import argparse, logging, os, random, time, json, functools
+import argparse, logging, os, random, time, json, functools, pickle
 from itertools import groupby
 import numpy as np
 from tensorflow.python import debug as tf_debug
@@ -768,6 +768,8 @@ class RRI(object):
     if not hasattr(self, 'session_'):
       raise AttributeError(RRI.NOT_FIT_EXCEPTION)
     q_list, doc_list, score_list, loss_list, acc_list = [], [], [], [], []
+    # to investigate the density of match_matrix
+    #rel_density, nonrel_density = [], []
     decision_handle = self.session_.run(self.decision_data_init_op.string_handle())
     self.session_.run(self.decision_data_init_op.initializer, 
       feed_dict={self.tfrecord_pattern: decision_file_pattern})
@@ -775,9 +777,22 @@ class RRI(object):
       try:
         if self.loss_func == 'classification' and self.rel_level != 2:
           raise Exception(RRI.DECISION_EXCEPTION)
-        scores, loss, qid, docid, _, acc = \
-          self.session_.run([self.scores, self.loss, self.qid, self.docid, self.acc_op, self.acc], 
+        scores, loss, qid, docid, _, acc, match_matrix, min_density, qd_size, relevance = \
+          self.session_.run([self.scores, self.loss, self.qid, self.docid, self.acc_op, self.acc, 
+            self.rri_info['match_matrix'], self.rri_info['min_density'], self.qd_size, self.relevance], 
             feed_dict={self.handle: decision_handle})
+        #density = np.max(match_matrix, axis=2)
+        #min_density = 0.3 * np.max(density, axis=1) + 0.7 * (np.sum(density, axis=1) / qd_size[:, 1])
+        #min_density = np.percentile(density, 80, axis=1)
+        #min_density = [np.percentile(density[i][:qd_size[i, 1]], 80) for i, d in enumerate(density)]
+        #min_density = np.expand_dims(min_density, axis=1)
+        #left_density = np.sum(density >= min_density, axis=1) / qd_size[:, 1]
+        #for i, d in enumerate(left_density):
+        #  if d >= 1:
+        #    print(d, i, qd_size[i], density[i][:qd_size[i,1]], min_density[i, 0])
+        #    input()
+        #[rel_density.append(d) for i, d in enumerate(left_density) if relevance[i] > 0]
+        #[nonrel_density.append(d) for i, d in enumerate(left_density) if relevance[i] <= 0]
         acc_list.append(acc)
         loss_list.append(loss)
         score_list.extend(scores)
@@ -786,6 +801,7 @@ class RRI(object):
       except tf.errors.OutOfRangeError:
         break
     ranks = self.get_ranking(q_list, doc_list, score_list)
+    #pickle.dump([rel_density, nonrel_density], open('density_test_tfpercentile_02.data', 'wb'))
     return ranks, np.mean(loss_list), np.mean(acc_list)
 
 
