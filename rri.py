@@ -123,6 +123,7 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
     query_repr_ta = kwargs['query_repr_ta']
     time = kwargs['time']
     is_stop = kwargs['is_stop']
+    min_density = kwargs['min_density']
     cur_location = location_ta.read(time)
     cur_next_location = location_ta.read(time + 1)
     with vs.variable_scope('ReprCond'):
@@ -193,9 +194,33 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
         state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, 
             lambda: state_ta.write(0, tf.zeros_like(local_match_matrix)))
         representation = local_match_matrix
-    elif represent == 'interaction_cnn_hard_resize':
+    elif represent == 'interaction_cnn_mask_hard':
         state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, lambda: state_ta.write(0, tf.zeros([bs, 200])))
-        # in this implementation of "interaction_cnn_hard_resize", we don't calculate similarity matrix again
+        # in this implementation, we mask the match_matrix uisng min_density threshold and
+        # apply CNN on it. Note that this implementation does not depend on the location, which
+        # makes the tf.while useless.
+        if 'max_jump_offset' not in kwargs or 'max_jump_offset2' not in kwargs:
+            raise ValueError('max_jump_offset and max_jump_offset2 must be set when InterCNN is used')
+        max_jump_offset = kwargs['max_jump_offset']
+        max_jump_offset2 = kwargs['max_jump_offset2']
+        d_size, q_size = dq_size[0], dq_size[1]
+        local_match_matrix = match_matrix * tf.cast(
+            tf.reduce_max(match_matrix, axis=2, keep_dims=True) >= \
+            tf.reshape(min_density, [bs, 1, 1]), dtype=match_matrix.dtype)
+        local_match_matrix = tf.pad(local_match_matrix, 
+            [[0, 0], [0, max_jump_offset-tf.shape(local_match_matrix)[1]], 
+            [0, max_jump_offset2-tf.shape(local_match_matrix)[2]]], 'CONSTANT', constant_values=0)
+        local_match_matrix.set_shape([None, max_jump_offset, max_jump_offset2])
+        local_match_matrix = tf.expand_dims(local_match_matrix, 3)
+        with vs.variable_scope('MaksInterCNN'):
+            inter_dpool_index = DynamicMaxPooling.dynamic_pooling_index_2d(d_size, q_size, 
+                max_jump_offset, max_jump_offset2)
+            inter_repr = cnn(local_match_matrix, architecture=[(5, 5, 1, 8), (5, 5)], activation='relu',
+                dpool_index=inter_dpool_index)
+            representation = tf.reshape(inter_repr, [bs, -1])
+    elif represent == 'interaction_cnn_resize_hard':
+        state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, lambda: state_ta.write(0, tf.zeros([bs, 200])))
+        # in this implementation, we don't calculate similarity matrix again
         if 'max_jump_offset' not in kwargs or 'max_jump_offset2' not in kwargs:
             raise ValueError('max_jump_offset and max_jump_offset2 must be set when InterCNN is used')
         max_jump_offset = kwargs['max_jump_offset']
@@ -469,7 +494,7 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
                                        location_one_out, represent, max_jump_offset=max_jump_offset, \
                                        max_jump_offset2=max_jump_offset2, rnn_size=rnn_size, keep_prob=keep_prob, \
                                        separate=separate, location_ta=location_ta, state_ta=state_ta, doc_repr_ta=doc_repr_ta, \
-                                       query_repr_ta=query_repr_ta, time=time, is_stop=is_stop)
+                                       query_repr_ta=query_repr_ta, time=time, is_stop=is_stop, min_density=min_density)
             step = step + tf.where(is_stop, tf.zeros([bs], dtype=tf.int32), tf.ones([bs], dtype=tf.int32))
             return time + 1, is_stop, step, state_ta, doc_repr_ta, query_repr_ta, location_ta, dq_size_t, total_offset
         _, is_stop, step, state_ta, doc_repr_ta, query_repr_ta, location_ta, dq_size_t, total_offset = \

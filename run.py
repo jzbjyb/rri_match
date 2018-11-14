@@ -19,6 +19,8 @@ if __name__ == '__main__':
   parser.add_argument('--disable_gpu', help='whether to disable GPU', action='store_true')
   parser.add_argument('--gpu', help='which GPU to use', type=str, default='0')
   parser.add_argument('-d', '--data_dir', help='data directory', type=str)
+  parser.add_argument('-w', '--word_vector_path', help='fila path to word vector', type=str, 
+    default='w2v')
   parser.add_argument('-B', '--tf_summary_path', help='path to save tf summary', type=str, default=None)
   parser.add_argument('-s', '--save_model_path', help='path to save tf model', type=str, default=None)
   parser.add_argument('-r', '--reuse_model_path', help='path to the model to reuse', type=str, default=None)
@@ -28,6 +30,7 @@ if __name__ == '__main__':
     action='store_true')
   parser.add_argument('--tfrecord', help='whether to use tfrecord as input pipeline', 
     action='store_true')
+  parser.add_argument('--no_normalize_w2v', help='whether to normalize w2v or not', action='store_true')
   parser.add_argument('-p', '--paradigm', help='learning to rank paradigm', type=str, 
     default='pointwise')
   args = parser.parse_args()
@@ -384,8 +387,8 @@ class RRI(object):
               # If we go through all the samples using batch_num, we don't need to re-initialize 
               # iterator of train dataset, which means that we need the repeat the dataset.
               dataset = dataset.repeat()
-          dataset = dataset.prefetch(self.batch_size)
           dataset = dataset.padded_batch(self.batch_size, padded_shapes=dataset.output_shapes)
+          dataset = dataset.prefetch(self.batch_size)
           return dataset
         # name pattern of the input tfrecord file
         self.tfrecord_pattern = tf.placeholder(tf.string, shape=[], 
@@ -624,7 +627,7 @@ class RRI(object):
             print('adding run metadata for {}'.format(i))
             if trace_op:
               profiler_opts = builder(builder.time_and_memory()).order_by('micros').build()
-              tf.profiler.profile(self.graph_, run_meta=run_metadata, cmd='op', options=profiler_opts)
+              tf.profiler.profile(self.graph_, run_meta=run_metadata, cmd='scope', options=profiler_opts)
               input('press to continue')
             if trace_graph:
               #profiler.add_step(step=i, run_meta=run_metadata)
@@ -824,9 +827,9 @@ def train_test():
   '''
   load word vector
   '''
-  w2v_file = os.path.join(args.data_dir, 'w2v')
+  w2v_file = os.path.join(args.data_dir, args.word_vector_path)
   vocab_file = os.path.join(args.data_dir, 'vocab')
-  print('loading word vector ...')
+  print('loading word vector from {} ...'.format(w2v_file))
   wv = WordVector(filepath=w2v_file)
   vocab = Vocab(filepath=vocab_file, file_format=args.format)
   print('vocab size: {}, word vector dim: {}'.format(wv.vocab_size, wv.dim))
@@ -917,7 +920,7 @@ def train_test():
     'max_q_len': max_q_len, 
     'max_d_len': max_d_len, 
     'max_jump_step': 100, 
-    'word_vector': wv.get_vectors(normalize=True),
+    'word_vector': wv.get_vectors(normalize=not args.no_normalize_w2v),
     'oov_word_vector': None,
     'vocab': vocab, 
     'word_vector_trainable': False,
@@ -933,7 +936,7 @@ def train_test():
     'separate': False, 
     'aggregate': 'max', 
     'rnn_size': 16, 
-    'max_jump_offset': 50, 
+    'max_jump_offset': max_d_len, 
     'max_jump_offset2': max_q_len, 
     'rel_level': rel_level, 
     'loss_func': 'classification',
