@@ -207,6 +207,9 @@ class CNNVis(object):
 
 
     def plot_saliency_map(self, image, saliency_map):
+        if len(image.shape) == 3:
+            image = np.expand_dims(image, axis=-1)
+            saliency_map = np.expand_dims(saliency_map, axis=-1)
         bs, h, w, c = saliency_map.shape
         print('vis saliency map with size: {}'.format(saliency_map.shape))
         saliency_map = np.max(np.abs(saliency_map), axis=3)

@@ -6,8 +6,8 @@ from sklearn.base import BaseEstimator, ClassifierMixin
 import matplotlib.pyplot as plt
 from utils import Vocab, WordVector, load_prep_file, load_train_test_file, printoptions, load_judge_file
 from metric import evaluate, ndcg, average_precision, precision
-from rri import rri
-from cnn import DynamicMaxPooling
+from rri import rri, DELTA
+from cnn import DynamicMaxPooling, CNNVis
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser(description='run')
@@ -500,6 +500,19 @@ class RRI(object):
     self.saver = tf.train.Saver()
     if self.summary_path != None:
       self.train_writer = tf.summary.FileWriter(os.path.join(self.summary_path, 'train'), self.graph_)
+    if False:
+      self.saliency = tf.gradients(-self.loss, [self.rri_info['match_matrix']])[0]
+      saliency_dist = tf.reshape(tf.abs(self.saliency), [bs, -1])
+      saliency_dist = saliency_dist / (tf.reduce_sum(saliency_dist, axis=1, keep_dims=True) + DELTA)
+      match_matrix_flattend = tf.reshape(self.rri_info['match_matrix'], [bs, -1])
+      self.match_matrix_focus = tf.reduce_sum(
+        saliency_dist * match_matrix_flattend, axis=1)
+      self.match_matrix_focus_bins = []
+      for density_re in [-0.5, -0.25, 0, 0.25, 0.5, 0.75, 100]:
+        pass
+    else:
+      self.saliency = tf.no_op()
+      self.match_matrix_focus = tf.no_op()
     #self.test_wv_grad = tf.gradients(self.loss, [self.word_vector_variable])[0]
     #self.test_rnn_grad = tf.gradients(self.loss, [v for v in tf.global_variables() 
     #    if 'rnn' in v.name and 'kernel' in v.name and 'Adam' not in v.name])[0]
@@ -592,121 +605,140 @@ class RRI(object):
     if self.unsupervised:
       yield
       return
-    for epoch in range(self.n_epochs):
-      epoch += 1
-      start = time.time()
-      feed_time_all = 0
-      loss_list, com_r_list, stop_r_list, total_offset_list, step_list = [], [], [], [], []
-      if self.tfrecord:
-        train_handle = self.session_.run(self.train_data_init_op.string_handle())
-        if epoch == 1 or self.batch_num is None:
-          # When batch_num is used, we don't need to re-initialize the dataset.
-          self.session_.run(self.train_data_init_op.initializer, 
-            feed_dict={self.tfrecord_pattern: X})
-      #for i, (fd, feed_time) in enumerate(self.batcher(X, y, self.batch_size, use_permutation=True, batch_num=self.batch_num)):
-      for i, (fd, feed_time) in enumerate(batcher_wrapper()):
-        feed_time_all += feed_time
-        if not self.tfrecord:
-          batch_size = len(fd['query'])
-        else:
-          fd = {self.handle: train_handle}
-          batch_size = None
-        # tfrecord also need feed_dict, like keep_prob
-        feed_dict = self.feed_dict_postprocess(fd, is_train=True)
-        fetch = [self.rri_info['step'], self.rri_info['location'], self.rri_info['match_matrix'],
-             self.loss, self.scores, self.rri_info['complete_ratio'], self.rri_info['is_stop'], self.rri_info['stop_ratio'], 
-             self.rri_info['total_offset'], self.rri_info['signal'], self.rri_info['states'], self.trainer, 
-             self.qid, self.docid, self.qd_size]
-        start_time = time.time()
-        try:
-          if self.summary_path != None and i % 1 == 0: # run statistics
-            step, location, match_matrix, loss, scores, com_r, is_stop, stop_r, total_offset, signal, states, _, \
-            fd['qid'], fd['docid'], fd['qd_size'] = \
-              self.session_.run(fetch, feed_dict=feed_dict, options=run_options, run_metadata=run_metadata)
-            self.train_writer.add_run_metadata(run_metadata, 'step%d' % i)
-            print('adding run metadata for {}'.format(i))
-            if trace_op:
-              profiler_opts = builder(builder.time_and_memory()).order_by('micros').build()
-              tf.profiler.profile(self.graph_, run_meta=run_metadata, cmd='scope', options=profiler_opts)
-              input('press to continue')
-            if trace_graph:
-              #profiler.add_step(step=i, run_meta=run_metadata)
-              #profiler_opts_builder = builder(builder.time_and_memory())
-              #profiler_opts_builder.with_timeline_output(timeline_file='summary/profiler.json')
-              #profiler_opts_builder.with_step(i)
-              #profiler.profile_graph(profiler_opts_builder.build())
-              trace = timeline.Timeline(step_stats=run_metadata.step_stats)
-              trace_file = open('summary/profiler.json', 'w')
-              trace_file.write(trace.generate_chrome_trace_format())
-            print('profile run metadata for {}'.format(i))
+    with open('match_matrix_focus_test', 'w') as mmf_fout:
+      for epoch in range(self.n_epochs):
+        epoch += 1
+        start = time.time()
+        feed_time_all = 0
+        loss_list, com_r_list, stop_r_list, total_offset_list, step_list = [], [], [], [], []
+        if self.tfrecord:
+          train_handle = self.session_.run(self.train_data_init_op.string_handle())
+          if epoch == 1 or self.batch_num is None:
+            # When batch_num is used, we don't need to re-initialize the dataset.
+            self.session_.run(self.train_data_init_op.initializer, 
+              feed_dict={self.tfrecord_pattern: X})
+        #for i, (fd, feed_time) in enumerate(self.batcher(X, y, self.batch_size, use_permutation=True, batch_num=self.batch_num)):
+        for i, (fd, feed_time) in enumerate(batcher_wrapper()):
+          feed_time_all += feed_time
+          if not self.tfrecord:
+            batch_size = len(fd['query'])
           else:
-            step, location, match_matrix, loss, scores, com_r, is_stop, stop_r, total_offset, signal, states, _, \
-            fd['qid'], fd['docid'], fd['qd_size'] = \
-              self.session_.run(fetch, feed_dict=feed_dict)
-        except tf.errors.OutOfRangeError:
-          if self.batch_num:
-            raise Exception('Tfrecord OutOfRange is not expected because you are using batch_num')
-          break
-        end_time = time.time()
-        loss_list.append(loss)
-        com_r_list.append(com_r)
-        stop_r_list.append(stop_r)
-        total_offset_list.extend(total_offset)
-        step_list.extend(step)
-        if self.verbose >= 2:
-          print('{:<5}\t{:>5.3f}\tloss:{:>5.3f}\tcom ratio:{:>3.2f}\tstop ratio:{:>3.2f}'
-              .format(i, end_time - start_time, loss, com_r, stop_r))
-        if args.debug and hasattr(self, 'test_rnn_grad'):
-          test_rnn_grad, = self.session_.run([self.test_rnn_grad], feed_dict=feed_dict)
-          with printoptions(precision=3, suppress=True, threshold=np.nan):
-            print(np.max(np.abs(test_rnn_grad), axis=1))
-            #input()
-        if args.debug and self.word_vector_trainable and hasattr(self, 'test_wv_grad'):
-          test_grad, = self.session_.run([self.test_wv_grad], feed_dict=feed_dict)
-          with printoptions(precision=3, suppress=True, threshold=np.nan):
-            print(type(test_grad))
-            print(len(test_grad.indices))
-            #print(np.sum(np.any(test_grad[0] != 0, axis=2), axis=1))
-            inds = np.any(np.abs(test_grad.values) >= .001, axis=1)
-            w_inds, u_w_inds = test_grad.indices[inds], np.unique(test_grad.indices[inds])
-            print(np.sum(w_inds), len(u_w_inds))
-            print(w_inds)
-            print(u_w_inds)
-            print(self.vocab.decode(u_w_inds))
-            print(np.max(np.abs(test_grad.values[inds]), axis=1))
-            #input()
-        if args.debug:
-          cont = input('continue debug? y for yes:')
-          if cont != 'y':
-            continue
-          with printoptions(precision=3, suppress=True, threshold=np.nan):
-            batch_size = len(fd['qid'])
-            for b in range(batch_size):
-              print('qd_size: {}, step: {}, is_stop: {}, offset: {}'.format(
-                fd['qd_size'][b], step[b], is_stop[b], total_offset[b]))
-              print('qid: {}, docid: {}'.format(fd['qid'][b], fd['docid'][b]))
-              print(location[b, :step[b]+1])
-              print(np.max(match_matrix[b][:fd['qd_size'][b, 1], :fd['qd_size'][b, 0]], axis=1))
-              print(np.max(match_matrix[b][:fd['qd_size'][b, 1], :fd['qd_size'][b, 0]], axis=0))
-              #print(np.max(match_matrix[b], axis=1))
-              #print(np.max(match_matrix[b], axis=0))
-              #print(states[1, b])
-              #print(scores[b])
-              bcont = input('break? y for yes:')
-              if bcont == 'y':
-                break
-      if self.verbose >= 1:  # output epoch stat
-        print('{:<10}\t{:>7}:{:>6.3f}\tstop:{:>5.3f}\toffset:{:>5.1f}\tstep:{:>3.1f}'
-            .format('EPO[{}_{:>3.1f}_{:>3.1f}]'.format(epoch, (time.time() - start) / 60, feed_time_all/60),
-                'train', np.mean(loss_list), np.mean(stop_r_list), 
-                np.mean(total_offset_list), np.mean(step_list)), end='', flush=True)
-      # save the model
-      if self.save_epochs and (epoch % self.save_epochs == 0 or epoch == self.n_epochs):
-        if self.save_model:
-          self.saver.save(self.session_, self.save_model)
-        yield
-      if self.verbose:
-        print('')
+            fd = {self.handle: train_handle}
+            batch_size = None
+          # tfrecord also need feed_dict, like keep_prob
+          feed_dict = self.feed_dict_postprocess(fd, is_train=True)
+          fetch = [self.rri_info['step'], self.rri_info['location'], self.rri_info['match_matrix'],
+               self.loss, self.scores, self.rri_info['complete_ratio'], self.rri_info['is_stop'], self.rri_info['stop_ratio'], 
+               self.rri_info['total_offset'], self.rri_info['signal'], self.rri_info['states'], self.rri_info['min_density'], 
+               self.saliency, self.match_matrix_focus, self.trainer, self.qid, self.docid, self.qd_size, self.relevance]
+          start_time = time.time()
+          try:
+            if self.summary_path != None and i % 1 == 0: # run statistics
+              step, location, match_matrix, loss, scores, com_r, is_stop, stop_r, total_offset, signal, states, \
+              min_density, saliency, match_matrix_focus, _, fd['qid'], fd['docid'], fd['qd_size'], fd['relevance'] = \
+                self.session_.run(fetch, feed_dict=feed_dict, options=run_options, run_metadata=run_metadata)
+              self.train_writer.add_run_metadata(run_metadata, 'step%d' % i)
+              print('adding run metadata for {}'.format(i))
+              if trace_op:
+                profiler_opts = builder(builder.time_and_memory()).order_by('micros').build()
+                tf.profiler.profile(self.graph_, run_meta=run_metadata, cmd='scope', options=profiler_opts)
+                input('press to continue')
+              if trace_graph:
+                #profiler.add_step(step=i, run_meta=run_metadata)
+                #profiler_opts_builder = builder(builder.time_and_memory())
+                #profiler_opts_builder.with_timeline_output(timeline_file='summary/profiler.json')
+                #profiler_opts_builder.with_step(i)
+                #profiler.profile_graph(profiler_opts_builder.build())
+                trace = timeline.Timeline(step_stats=run_metadata.step_stats)
+                trace_file = open('summary/profiler.json', 'w')
+                trace_file.write(trace.generate_chrome_trace_format())
+              print('profile run metadata for {}'.format(i))
+            else:
+              step, location, match_matrix, loss, scores, com_r, is_stop, stop_r, total_offset, signal, states, \
+              min_density, saliency, match_matrix_focus, _, fd['qid'], fd['docid'], fd['qd_size'], fd['relevance'] = \
+                self.session_.run(fetch, feed_dict=feed_dict)
+            #for j, mmf in enumerate(match_matrix_focus):
+            #  mmf_fout.write('{}\t{}\n'.format(mmf, scores[j]))
+          except tf.errors.OutOfRangeError:
+            if self.batch_num:
+              raise Exception('Tfrecord OutOfRange is not expected because you are using batch_num')
+            break
+          end_time = time.time()
+          loss_list.append(loss)
+          com_r_list.append(com_r)
+          stop_r_list.append(stop_r)
+          total_offset_list.extend(total_offset)
+          step_list.extend(step)
+          if self.verbose >= 2:
+            print('{:<5}\t{:>5.3f}\tloss:{:>5.3f}\tcom ratio:{:>3.2f}\tstop ratio:{:>3.2f}'
+                .format(i, end_time - start_time, loss, com_r, stop_r))
+          if args.debug and hasattr(self, 'test_rnn_grad'):
+            test_rnn_grad, = self.session_.run([self.test_rnn_grad], feed_dict=feed_dict)
+            with printoptions(precision=3, suppress=True, threshold=np.nan):
+              print(np.max(np.abs(test_rnn_grad), axis=1))
+              #input()
+          if args.debug and self.word_vector_trainable and hasattr(self, 'test_wv_grad'):
+            test_grad, = self.session_.run([self.test_wv_grad], feed_dict=feed_dict)
+            with printoptions(precision=3, suppress=True, threshold=np.nan):
+              print(type(test_grad))
+              print(len(test_grad.indices))
+              #print(np.sum(np.any(test_grad[0] != 0, axis=2), axis=1))
+              inds = np.any(np.abs(test_grad.values) >= .001, axis=1)
+              w_inds, u_w_inds = test_grad.indices[inds], np.unique(test_grad.indices[inds])
+              print(np.sum(w_inds), len(u_w_inds))
+              print(w_inds)
+              print(u_w_inds)
+              print(self.vocab.decode(u_w_inds))
+              print(np.max(np.abs(test_grad.values[inds]), axis=1))
+              #input()
+          if args.debug:
+            cont = input('continue debug? y for yes:')
+            if cont != 'y':
+              continue
+            with printoptions(precision=6, suppress=True, threshold=np.nan):
+              cnn_vis = CNNVis()
+              batch_size = len(fd['qid'])
+              s2 = np.reshape(scores, [-1, 2])
+              print(s2[:, 0] - s2[:, 1])
+              print(match_matrix_focus)
+              while True:
+                b = input('which sample between 0 and {} (y for break)'.format(batch_size))
+                if b == 'y':
+                  break
+                try:
+                   b = int(b)
+                except ValueError:
+                   print('int or b')
+                   continue
+                print('qd_size: {}, step: {}, is_stop: {}, offset: {}'.format(
+                  fd['qd_size'][b], step[b], is_stop[b], total_offset[b]))
+                print('qid: {}, docid: {}, rel: {}, score: {}'.format(
+                  fd['qid'][b], fd['docid'][b], fd['relevance'][b], scores[b]))
+                print(location[b, :step[b]+1])
+                print(np.max(match_matrix[b][:fd['qd_size'][b, 1], :fd['qd_size'][b, 0]], axis=1))
+                print(np.max(match_matrix[b][:fd['qd_size'][b, 1], :fd['qd_size'][b, 0]], axis=0))
+                saliency = np.abs(saliency)
+                top_s = np.argsort(-saliency[b].flatten())
+                #print(top_s)
+                print(saliency[b].flatten()[top_s[:10]])
+                print(match_matrix[b].flatten()[top_s[:10]])
+                #print(np.max(match_matrix[b], axis=1))
+                #print(np.max(match_matrix[b], axis=0))
+                #print(states[1, b])
+                print(min_density[b])
+                #cnn_vis.plot_saliency_map(match_matrix, saliency)
+        if self.verbose >= 1:  # output epoch stat
+          print('{:<10}\t{:>7}:{:>6.3f}\tstop:{:>5.3f}\toffset:{:>5.1f}\tstep:{:>3.1f}'
+              .format('EPO[{}_{:>3.1f}_{:>3.1f}]'.format(epoch, (time.time() - start) / 60, feed_time_all/60),
+                  'train', np.mean(loss_list), np.mean(stop_r_list), 
+                  np.mean(total_offset_list), np.mean(step_list)), end='', flush=True)
+        # save the model
+        if self.save_epochs and (epoch % self.save_epochs == 0 or epoch == self.n_epochs):
+          if self.save_model:
+            self.saver.save(self.session_, self.save_model)
+          yield
+        if self.verbose:
+          print('')
 
 
   def test(self, X, y=None):
@@ -993,6 +1025,8 @@ def train_test():
       ranks, loss, acc = rri.decision_function(test_X_judge, test_y_judge)
       scores = evaluate(ranks, test_qd_judge, metric=average_precision, top_k=10000)
       avg_score = np.mean(list(scores.values()))
+    if not os.path.exists('ranking'):
+      os.mkdir('ranking')
     json.dump(ranks, open('ranking/ranking.{}.json'.format(i), 'w'))
     if i % 5 == 0:
       w2v_update = rri.get_w2v()

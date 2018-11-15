@@ -405,6 +405,7 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
                 '''
                 # only kep top min_density percentage words with maximum density in the document
                 with vs.variable_scope('PercentileDensity'):
+                    print('use percentile density')
                     density = tf.reduce_max(match_matrix, 2)
                     density, _ = tf.nn.top_k(density, 
                         tf.cast(tf.cast(max_d_len, dtype=tf.float32)*min_density, dtype=tf.int32))
@@ -413,6 +414,7 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
                     min_density = tf.squeeze(batch_slice(density, top_k, 
                         tf.ones_like(top_k), pad_values=0))
             else:
+                print('use global density')
                 min_density = tf.ones_like(dq_size[:, 0], dtype=tf.float32) * min_density
     with vs.variable_scope('SelectiveJump'):
         if jump.endswith('hard'):
