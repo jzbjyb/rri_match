@@ -6,6 +6,7 @@ trained_model
 configs
 results
 model
+vis
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

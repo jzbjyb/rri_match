@@ -8,6 +8,15 @@ from boilerpipe.extract import Extractor
 from nltk.tokenize import word_tokenize
 
 
+class NullContextManager(object):
+    def __init__(self, dummy_resource=None):
+        self.dummy_resource = dummy_resource
+    def __enter__(self):
+        return self.dummy_resource
+    def __exit__(self, *args):
+        pass
+
+
 @contextlib.contextmanager
 def printoptions(*args, **kwargs):
     original = np.get_printoptions()

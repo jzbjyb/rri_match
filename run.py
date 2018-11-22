@@ -4,7 +4,8 @@ import numpy as np
 from tensorflow.python import debug as tf_debug
 from sklearn.base import BaseEstimator, ClassifierMixin
 import matplotlib.pyplot as plt
-from utils import Vocab, WordVector, load_prep_file, load_train_test_file, printoptions, load_judge_file
+from utils import Vocab, WordVector, load_prep_file, load_train_test_file, printoptions, \
+  load_judge_file, NullContextManager
 from metric import evaluate, ndcg, average_precision, precision
 from rri import rri, DELTA
 from cnn import DynamicMaxPooling, CNNVis
@@ -266,6 +267,7 @@ class RRI(object):
     self.summary_path = summary_path
     self.tfrecord = tfrecord
     self.unsupervised = unsupervised
+    self.match_matrix_focus_debug = False
 
 
   @staticmethod
@@ -500,7 +502,7 @@ class RRI(object):
     self.saver = tf.train.Saver()
     if self.summary_path != None:
       self.train_writer = tf.summary.FileWriter(os.path.join(self.summary_path, 'train'), self.graph_)
-    if False:
+    if self.match_matrix_focus_debug:
       self.saliency = tf.gradients(-self.loss, [self.rri_info['match_matrix']])[0]
       saliency_dist = tf.reshape(tf.abs(self.saliency), [bs, -1])
       saliency_dist = saliency_dist / (tf.reduce_sum(saliency_dist, axis=1, keep_dims=True) + DELTA)
@@ -508,11 +510,21 @@ class RRI(object):
       self.match_matrix_focus = tf.reduce_sum(
         saliency_dist * match_matrix_flattend, axis=1)
       self.match_matrix_focus_bins = []
-      for density_re in [-0.5, -0.25, 0, 0.25, 0.5, 0.75, 100]:
-        pass
+      match_matrix_cur = tf.cast(tf.zeros_like(match_matrix_flattend), dtype=tf.bool)
+      #for density_region in [-0.5, -0.25, 0, 0.25, 0.5, 0.75, 100]:
+      for density_region in [-0.5, -0.25, -0.1, 0, 0.1, 0.25, 0.5, 0.75, 100]:
+        match_matrix_cur = tf.logical_and(match_matrix_flattend <= density_region,
+          tf.logical_not(match_matrix_cur))
+        match_matrix_cur = tf.cast(match_matrix_cur, dtype=saliency_dist.dtype)
+        match_matrix_focus_cur = tf.reduce_sum(saliency_dist * match_matrix_cur, axis=1) / \
+          (tf.reduce_sum(match_matrix_cur, axis=1) + DELTA)
+        self.match_matrix_focus_bins.append(match_matrix_focus_cur)
+        match_matrix_cur = match_matrix_flattend <= density_region
+      self.match_matrix_focus_bins = tf.stack(self.match_matrix_focus_bins)
     else:
       self.saliency = tf.no_op()
       self.match_matrix_focus = tf.no_op()
+      self.match_matrix_focus_bins = tf.no_op()
     #self.test_wv_grad = tf.gradients(self.loss, [self.word_vector_variable])[0]
     #self.test_rnn_grad = tf.gradients(self.loss, [v for v in tf.global_variables() 
     #    if 'rnn' in v.name and 'kernel' in v.name and 'Adam' not in v.name])[0]
@@ -605,7 +617,9 @@ class RRI(object):
     if self.unsupervised:
       yield
       return
-    with open('match_matrix_focus_test', 'w') as mmf_fout:
+    with open('match_matrix_focus_test', 'w') if self.match_matrix_focus_debug \
+      else NullContextManager(None) as mmf_fout:
+      print('!{}'.format(mmf_fout))
       for epoch in range(self.n_epochs):
         epoch += 1
         start = time.time()
@@ -630,12 +644,14 @@ class RRI(object):
           fetch = [self.rri_info['step'], self.rri_info['location'], self.rri_info['match_matrix'],
                self.loss, self.scores, self.rri_info['complete_ratio'], self.rri_info['is_stop'], self.rri_info['stop_ratio'], 
                self.rri_info['total_offset'], self.rri_info['signal'], self.rri_info['states'], self.rri_info['min_density'], 
-               self.saliency, self.match_matrix_focus, self.trainer, self.qid, self.docid, self.qd_size, self.relevance]
+               self.saliency, self.match_matrix_focus, self.match_matrix_focus_bins, self.trainer, 
+               self.qid, self.docid, self.qd_size, self.relevance]
           start_time = time.time()
           try:
             if self.summary_path != None and i % 1 == 0: # run statistics
               step, location, match_matrix, loss, scores, com_r, is_stop, stop_r, total_offset, signal, states, \
-              min_density, saliency, match_matrix_focus, _, fd['qid'], fd['docid'], fd['qd_size'], fd['relevance'] = \
+              min_density, saliency, match_matrix_focus, match_matrix_focus_bins, _, fd['qid'], fd['docid'], \
+              fd['qd_size'], fd['relevance'] = \
                 self.session_.run(fetch, feed_dict=feed_dict, options=run_options, run_metadata=run_metadata)
               self.train_writer.add_run_metadata(run_metadata, 'step%d' % i)
               print('adding run metadata for {}'.format(i))
@@ -655,10 +671,15 @@ class RRI(object):
               print('profile run metadata for {}'.format(i))
             else:
               step, location, match_matrix, loss, scores, com_r, is_stop, stop_r, total_offset, signal, states, \
-              min_density, saliency, match_matrix_focus, _, fd['qid'], fd['docid'], fd['qd_size'], fd['relevance'] = \
+              min_density, saliency, match_matrix_focus, match_matrix_focus_bins, _, fd['qid'], fd['docid'], \
+              fd['qd_size'], fd['relevance'] = \
                 self.session_.run(fetch, feed_dict=feed_dict)
-            #for j, mmf in enumerate(match_matrix_focus):
-            #  mmf_fout.write('{}\t{}\n'.format(mmf, scores[j]))
+            if mmf_fout != None:
+              for j, mmf in enumerate(match_matrix_focus):
+                focus_bins = [match_matrix_focus_bins[k, j] \
+                  for k in range(match_matrix_focus_bins.shape[0])]
+                mmf_fout.write('{}\t{}\t{}\n'.format(mmf, scores[j], 
+                  '\t'.join(map(lambda x: str(x), focus_bins))))
           except tf.errors.OutOfRangeError:
             if self.batch_num:
               raise Exception('Tfrecord OutOfRange is not expected because you are using batch_num')
@@ -698,9 +719,6 @@ class RRI(object):
             with printoptions(precision=6, suppress=True, threshold=np.nan):
               cnn_vis = CNNVis()
               batch_size = len(fd['qid'])
-              s2 = np.reshape(scores, [-1, 2])
-              print(s2[:, 0] - s2[:, 1])
-              print(match_matrix_focus)
               while True:
                 b = input('which sample between 0 and {} (y for break)'.format(batch_size))
                 if b == 'y':
@@ -714,19 +732,22 @@ class RRI(object):
                   fd['qd_size'][b], step[b], is_stop[b], total_offset[b]))
                 print('qid: {}, docid: {}, rel: {}, score: {}'.format(
                   fd['qid'][b], fd['docid'][b], fd['relevance'][b], scores[b]))
+                # visualize jump location
                 print(location[b, :step[b]+1])
+                # visualize match_matrix
                 print(np.max(match_matrix[b][:fd['qd_size'][b, 1], :fd['qd_size'][b, 0]], axis=1))
                 print(np.max(match_matrix[b][:fd['qd_size'][b, 1], :fd['qd_size'][b, 0]], axis=0))
-                saliency = np.abs(saliency)
-                top_s = np.argsort(-saliency[b].flatten())
-                #print(top_s)
-                print(saliency[b].flatten()[top_s[:10]])
-                print(match_matrix[b].flatten()[top_s[:10]])
                 #print(np.max(match_matrix[b], axis=1))
                 #print(np.max(match_matrix[b], axis=0))
-                #print(states[1, b])
+                # visualize match_matrix saliency (gradient)
+                saliency = np.abs(saliency)
+                top_s = np.argsort(-saliency[b].flatten())
+                print(saliency[b].flatten()[top_s[:10]])
+                print(match_matrix[b].flatten()[top_s[:10]])
                 print(min_density[b])
                 #cnn_vis.plot_saliency_map(match_matrix, saliency)
+                # visualize states
+                #print(states[1, b])
         if self.verbose >= 1:  # output epoch stat
           print('{:<10}\t{:>7}:{:>6.3f}\tstop:{:>5.3f}\toffset:{:>5.1f}\tstep:{:>3.1f}'
               .format('EPO[{}_{:>3.1f}_{:>3.1f}]'.format(epoch, (time.time() - start) / 60, feed_time_all/60),
