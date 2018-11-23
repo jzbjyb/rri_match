@@ -94,7 +94,39 @@ def load_run_file(filepath):
     return result
 
 
-def load_prep_file(filepath, file_format='ir'):
+def save_prep_file(filepath, docs, file_format='ir'):
+    with open(filepath, 'w') as fout:
+        for ind, d in docs:
+            if file_format == 'ir':
+                fout.write('{}\t{}\n'.format(ind, ' '.join(map(lambda x: str(x), d))))
+            elif file_format == 'text':
+                fout.write('{} {}\n'.format(ind, ' '.join(map(lambda x: str(x), d))))
+            else:
+                raise Exception()
+
+
+def load_prep_file_aslist(filepath, file_format='ir'):
+    '''
+    load the word sequence without splitting.
+    '''
+    result = []
+    with open(filepath, 'r') as fp:
+        for l in fp:
+            l = l.rstrip('\n')
+            if len(l) == 0:
+                continue
+            if file_format == 'ir':
+                k, ws = l.split('\t')
+                result.append((k, ws))
+            elif file_format == 'text':
+                k, ws = l.split(' ', 1)
+                result.append((k, ws))
+            else:
+                raise Exception()
+    return result
+
+
+def load_prep_file(filepath, file_format='ir', func=int):
     result = {}
     with open(filepath, 'r') as fp:
         for l in fp:
@@ -103,12 +135,12 @@ def load_prep_file(filepath, file_format='ir'):
                 continue
             if file_format == 'ir':
                 k, ws = l.split('\t')
-                result[k] = [int(w) for w in ws.split(' ') if len(w) > 0]
+                result[k] = [func(w) for w in ws.split(' ') if len(w) > 0]
             elif file_format == 'text':
                 ws = l.split(' ')
                 k = ws[0]
                 ws = ws[1:]
-                result[k] = [int(w) for w in ws]
+                result[k] = [func(w) for w in ws]
             else:
                 raise Exception()
     return result

@@ -151,6 +151,15 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
                           [ind, match_matrix, start, end, representation_ta],
                           parallel_iterations=1000)
         representation = representation_ta.stack()
+    elif represent == 'sum_match_matrix_hard':
+        '''
+        Directly sum all the elements in match_matrix without considering location.
+        The elements in the padding part of the matrix should be zero in this case. 
+        '''
+        state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, 
+            lambda: state_ta.write(0, tf.zeros([bs, 1], dtype=tf.float32)))
+        representation = tf.reduce_sum(match_matrix, axis=[1,2])
+        representation = tf.expand_dims(representation, axis=1)
     elif represent == 'log_tf_hard':
         '''
         Use log(tf + 1) to calculate the term frequency for each term in the query and sum them.
@@ -360,9 +369,10 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
     return state_ta, doc_repr_ta, query_repr_ta
 
 
-def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glimpse='fix_hard', glimpse_fix_size=None,
+def rri(query, doc, dq_size, max_jump_step, word_vector, interaction=['dot'], glimpse='fix_hard', glimpse_fix_size=None,
         min_density=None, use_ratio=False, min_jump_offset=1, jump='max_hard', represent='sum_hard', separate=False, 
-        aggregate='max', rnn_size=None, max_jump_offset=None, max_jump_offset2=None, keep_prob=1.0):
+        aggregate='max', rnn_size=None, max_jump_offset=None, max_jump_offset2=None, keep_prob=1.0,
+        query_weight=None, doc_weight=None):
     bs = tf.shape(query)[0]
     max_q_len = tf.shape(query)[1]
     max_d_len = tf.shape(doc)[1]
@@ -377,8 +387,13 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
         query_emb = tf.nn.embedding_lookup(word_vector, query)
         doc_emb = tf.nn.embedding_lookup(word_vector, doc)
     with vs.variable_scope('Match'):
+        # The first string in interaction signifies how to interact query embeding 
+        # and document embedding. The following elements signifies how to update match_matrix
+        # obtained by the first step.
+        if type(interaction) != list:
+            interaction = [interaction]
         # match_matrix is of shape (batch_size, max_d_len, max_q_len)
-        if interaction == 'indicator':
+        if interaction[0] == 'indicator':
             match_matrix = tf.cast(tf.equal(tf.expand_dims(doc, axis=2), tf.expand_dims(query, axis=1)),
                                    dtype=tf.float32)
             query_boundary = tf.expand_dims(tf.range(max_q_len), dim=0) < dq_size[:, 1:]
@@ -387,12 +402,19 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction='dot', glim
                 tf.cast(tf.logical_and(tf.expand_dims(query_boundary, axis=1), 
                 tf.expand_dims(doc_boundary, axis=2)), dtype=tf.float32)
         else:
-            if interaction == 'dot':
+            if interaction[0] == 'dot':
                 match_matrix = tf.matmul(doc_emb, tf.transpose(query_emb, [0, 2, 1]))
-            elif interaction == 'cosine':
+            elif interaction[0] == 'cosine':
                 match_matrix = tf.matmul(doc_emb, tf.transpose(query_emb, [0, 2, 1]))
                 match_matrix /= tf.sqrt(tf.reduce_sum(doc_emb * doc_emb, axis=2, keep_dims=True)) * \
                                 tf.sqrt(tf.reduce_sum(query_emb * query_emb, axis=2, keep_dims=True))
+        for interaction_update in interaction[1:]:
+            if interaction_update == 'weight':
+                if query_weight is None or doc_weight is None:
+                    raise Exception('no weight is provided')
+                print(match_matrix, doc_weight, query_weight)
+                match_matrix = match_matrix * tf.expand_dims(doc_weight, axis=2) * \
+                    tf.expand_dims(query_weight, axis=1)
         if min_density != None:
             if use_ratio:
                 '''

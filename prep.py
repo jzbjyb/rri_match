@@ -4,9 +4,10 @@ from itertools import groupby
 import numpy as np
 from jpype import *
 import tensorflow as tf
+from sklearn.feature_extraction.text import TfidfVectorizer
 from utils import Vocab, WordVector, load_from_html, load_from_query_file, load_train_test_file, \
   save_train_test_file, load_judge_file, load_run_file, load_query_log, save_judge_file, \
-  save_query_file, load_prep_file
+  save_query_file, load_prep_file, load_prep_file_aslist, save_prep_file
 from config import CONFIG
 
 if __name__ == '__main__':
@@ -416,21 +417,35 @@ def gen_pairwise():
               fout.write('{}\t{}\t{}\t{}\n'.format(s1[0], s1[1], s2[1], s1[2]-s2[2]))
 
 
-def gen_tfrecord():
+def gen_tfrecord(bow=False):
   # number of tfrecord file to save
   num_shards = 1
   print('use {} shards'.format(num_shards))
   def _pick_output_shard():
     return random.randint(0, num_shards-1)
   print('load text file ...')
-  doc_file = os.path.join(args.data_dir, 'docs.prep')
+  if not bow:
+    doc_file = os.path.join(args.data_dir, 'docs.prep')
+  else:
+    doc_file = os.path.join(args.data_dir, 'docs_bow.prep')
+    doc_weight_file = os.path.join(args.data_dir, 'docs_bow_weight.prep')
   if args.format == 'ir':
-    query_file = os.path.join(args.data_dir, 'query.prep')
+    if not bow:
+      query_file = os.path.join(args.data_dir, 'query.prep')
+    else:
+      query_file = os.path.join(args.data_dir, 'query_bow.prep')
+      query_weight_file = os.path.join(args.data_dir, 'query_bow_weight.prep')
   doc_raw = load_prep_file(doc_file, file_format=args.format)
   if args.format == 'ir':
     query_raw = load_prep_file(query_file, file_format=args.format)
   else:
     query_raw = doc_raw
+  if bow:
+    doc_raw_weight = load_prep_file(doc_weight_file, file_format=args.format, func=float)
+    if args.format == 'ir':
+      query_raw_weight = load_prep_file(query_weight_file, file_format=args.format, func=float)
+    else:
+      query_raw_weight = doc_raw_weight
   train_filename = os.path.join(args.data_dir, 'train.prep.{}'.format(args.paradigm))
   test_filename = os.path.join(args.data_dir, 'test.prep.{}'.format(args.paradigm))
   for fn in [train_filename, test_filename]:
@@ -451,6 +466,7 @@ def gen_tfrecord():
         db = d.encode('utf-8')
         features['docid'] = tf.train.Feature(bytes_list=tf.train.BytesList(value=[db]))
         features['doc'] = tf.train.Feature(int64_list=tf.train.Int64List(value=doc_raw[d]))
+        features['doc_weight'] = tf.train.Feature(float_list=tf.train.FloatList(value=doc_raw_weight[d]))
         features['doclen'] = tf.train.Feature(
           int64_list=tf.train.Int64List(value=[len(doc_raw[d])]))
       elif args.paradigm == 'pairwise':
@@ -462,12 +478,15 @@ def gen_tfrecord():
         features['docid2'] = tf.train.Feature(bytes_list=tf.train.BytesList(value=[d2b]))
         features['doc1'] = tf.train.Feature(int64_list=tf.train.Int64List(value=doc_raw[d1]))
         features['doc2'] = tf.train.Feature(int64_list=tf.train.Int64List(value=doc_raw[d2]))
+        features['doc1_weight'] = tf.train.Feature(float_list=tf.train.FloatList(value=doc_raw_weight[d1]))
+        features['doc2_weight'] = tf.train.Feature(float_list=tf.train.FloatList(value=doc_raw_weight[d2]))
         features['doc1len'] = tf.train.Feature(
           int64_list=tf.train.Int64List(value=[len(doc_raw[d1])]))
         features['doc2len'] = tf.train.Feature(
           int64_list=tf.train.Int64List(value=[len(doc_raw[d2])]))
       features['qid'] = tf.train.Feature(bytes_list=tf.train.BytesList(value=[qb]))
       features['query'] = tf.train.Feature(int64_list=tf.train.Int64List(value=query_raw[q]))
+      features['query_weight'] = tf.train.Feature(float_list=tf.train.FloatList(value=query_raw_weight[q]))
       features['label'] = tf.train.Feature(float_list=tf.train.FloatList(value=[r]))
       features['qlen'] = tf.train.Feature(int64_list=tf.train.Int64List(value=[len(query_raw[q])]))
       f = tf.train.Features(feature=features)
@@ -484,6 +503,39 @@ def drop_negative():
   save_train_test_file(
     [s for s in samples if (s[-1] > 0) or (random.random() <= keep)], out_filename, 
     file_format=args.format)
+
+
+def gen_tfidf():
+  doc_file = os.path.join(args.data_dir, 'docs.prep')
+  doc_bow_file= os.path.join(args.data_dir, 'docs_bow.prep')
+  doc_weight_file = os.path.join(args.data_dir, 'docs_bow_weight.prep')
+  doc_raw = load_prep_file_aslist(doc_file, file_format=args.format)
+  if args.format == 'ir':
+    query_file = os.path.join(args.data_dir, 'query.prep')
+    query_bow_file = os.path.join(args.data_dir, 'query_bow.prep')
+    query_weight_file = os.path.join(args.data_dir, 'query_bow_weight.prep')
+    query_raw = load_prep_file_aslist(query_file, file_format=args.format)
+  corpus = [d[1] for d in doc_raw]
+  if args.format == 'ir':
+    corpus += [q[1] for q in query_raw]
+  print('corpus size is: {}, start calculating tfidf vectors ...'.format(len(corpus)))
+  vectorizer = TfidfVectorizer(lowercase=False, analyzer='word', tokenizer=lambda x: x.split(), 
+    binary=False, min_df=1, norm='l2', sublinear_tf=True, use_idf=True)
+  tfidf_vec = vectorizer.fit_transform(corpus)
+  doc_vec = tfidf_vec[:len(doc_raw)]
+  if args.format == 'ir':
+    query_vec = tfidf_vec[len(doc_raw):]
+  features = np.array(vectorizer.get_feature_names())
+  print('total vocab size: {}, start saving ...'.format(len(features)))
+  save_prep_file(doc_bow_file, [(d[0], features[doc_vec[i].indices]) 
+    for i,d in enumerate(doc_raw)])
+  save_prep_file(doc_weight_file, [(d[0], doc_vec[i].data) 
+    for i,d in enumerate(doc_raw)])
+  if args.format == 'ir':
+    save_prep_file(query_bow_file, [(q[0], features[query_vec[i].indices]) 
+      for i,q in enumerate(query_raw)])
+    save_prep_file(query_weight_file, [(q[0], query_vec[i].data) 
+      for i,q in enumerate(query_raw)])
 
 
 if __name__ == '__main__':
@@ -512,9 +564,12 @@ if __name__ == '__main__':
   elif args.action == 'gen_pairwise':
     gen_pairwise()
   elif args.action == 'gen_tfrecord':
-    gen_tfrecord()
+    gen_tfrecord(bow=True)
   elif args.action == 'drop_negative':
     # random drop some negative samples to make training balanced
     drop_negative()
+  elif args.action == 'gen_tfidf':
+    # generate tfidf-like dataset in which each document is a bow with tfidf as weights.
+    gen_tfidf()
   else:
     raise NotImplementedError('action not supported')

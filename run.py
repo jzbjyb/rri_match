@@ -268,10 +268,11 @@ class RRI(object):
     self.tfrecord = tfrecord
     self.unsupervised = unsupervised
     self.match_matrix_focus_debug = False
+    self.tfrecord_has_weight = True # wether use doc/query weight or not
 
 
   @staticmethod
-  def parse_tfexample_fn_pairwise(example_proto, max_q_len, max_d_len):
+  def parse_tfexample_fn_pairwise(example_proto, max_q_len, max_d_len, has_weight):
     '''
     Parse a pairwise record.
     '''
@@ -287,17 +288,29 @@ class RRI(object):
       'doc2len': tf.FixedLenFeature([1], dtype=tf.int64),
       'label': tf.FixedLenFeature([1], dtype=tf.float32),
     }
+    if has_weight:
+      feature_to_type['query_weight'] = tf.VarLenFeature(dtype=tf.float32)
+      feature_to_type['doc1_weight'] = tf.VarLenFeature(dtype=tf.float32)
+      feature_to_type['doc2_weight'] = tf.VarLenFeature(dtype=tf.float32)
     parsed_features = tf.parse_single_example(example_proto, feature_to_type)
     parsed_features['query'] = tf.sparse_tensor_to_dense(parsed_features['query'])
     parsed_features['doc1'] = tf.sparse_tensor_to_dense(parsed_features['doc1'])
     parsed_features['doc2'] = tf.sparse_tensor_to_dense(parsed_features['doc2'])
     query = tf.stack([parsed_features['query'], parsed_features['query']])
+    if has_weight:
+      parsed_features['query_weight'] = tf.sparse_tensor_to_dense(parsed_features['query_weight'])
+      parsed_features['doc1_weight'] = tf.sparse_tensor_to_dense(parsed_features['doc1_weight'])
+      parsed_features['doc2_weight'] = tf.sparse_tensor_to_dense(parsed_features['doc2_weight'])
+      query_weight = tf.stack([parsed_features['query_weight'], parsed_features['query_weight']])
     qid = tf.stack([parsed_features['qid'], parsed_features['qid']])
     d1l = tf.shape(parsed_features['doc1'])[0]
     d2l = tf.shape(parsed_features['doc2'])[0]
     max_doc_len = tf.maximum(d1l, d2l)
     doc = tf.stack([tf.pad(parsed_features['doc1'], [[0, max_doc_len-d1l]]),
       tf.pad(parsed_features['doc2'], [[0, max_doc_len-d2l]])], axis=0)
+    if has_weight:
+      doc_weight = tf.stack([tf.pad(parsed_features['doc1_weight'], [[0, max_doc_len-d1l]]),
+        tf.pad(parsed_features['doc2_weight'], [[0, max_doc_len-d2l]])], axis=0)
     docid = tf.stack([parsed_features['docid1'], parsed_features['docid2']])
     qd_size1 = tf.concat([parsed_features['qlen'], parsed_features['doc1len']], axis=0)
     qd_size2 = tf.concat([parsed_features['qlen'], parsed_features['doc2len']], axis=0)
@@ -305,9 +318,16 @@ class RRI(object):
     relevance = tf.stack([parsed_features['label'], parsed_features['label']])
     query = query[:, :max_q_len]
     doc = doc[:, :max_d_len]
+    if has_weight:
+      query_weight = query_weight[:, :max_q_len]
+      doc_weight = doc_weight[:, :max_d_len]
+    else:
+      query_weight = tf.zeros_like(query, dtype=tf.float32)
+      doc_weight = tf.zeros_like(doc, dtype=tf.float32)
     qd_size = tf.minimum(qd_size, [[max_q_len, max_d_len]])
     #return tf.data.Dataset.from_tensor_slices((query, doc, qd_size, relevance, qid, docid))
-    return query, doc, qd_size, relevance, qid, docid
+    return query, query_weight, doc, doc_weight, qd_size, relevance, qid, docid
+
 
   @staticmethod
   def flat_map_tensor(*args):
@@ -315,7 +335,7 @@ class RRI(object):
 
 
   @staticmethod
-  def parse_tfexample_fn_pointwise(example_proto, max_q_len, max_d_len):
+  def parse_tfexample_fn_pointwise(example_proto, max_q_len, max_d_len, has_weight):
     '''
     Parse a pointwise record.
     '''
@@ -328,17 +348,30 @@ class RRI(object):
       'doclen': tf.FixedLenFeature([1], dtype=tf.int64),
       'label': tf.FixedLenFeature([1], dtype=tf.float32),
     }
+    if has_weight:
+      feature_to_type['query_weight'] = tf.VarLenFeature(dtype=tf.float32)
+      feature_to_type['doc_weight'] = tf.VarLenFeature(dtype=tf.float32)
     parsed_features = tf.parse_single_example(example_proto, feature_to_type)
     parsed_features['query'] = tf.sparse_tensor_to_dense(parsed_features['query'])
     parsed_features['doc'] = tf.sparse_tensor_to_dense(parsed_features['doc'])
+    if has_weight:
+      parsed_features['query_weight'] = tf.sparse_tensor_to_dense(parsed_features['query_weight'])
+      parsed_features['doc_weight'] = tf.sparse_tensor_to_dense(parsed_features['doc_weight'])
     query = parsed_features['query']
     doc = parsed_features['doc']
     qd_size = tf.concat([parsed_features['qlen'], parsed_features['doclen']], axis=0)
     relevance = parsed_features['label']
     query = query[:max_q_len]
     doc = doc[:max_d_len]
+    if has_weight:
+      query_weight = parsed_features['query_weight'][:max_q_len]
+      doc_weight = parsed_features['doc_weight'][:max_d_len]
+    else:
+      query_weight = tf.zeros_like(query, dtype=tf.float32)
+      doc_weight = tf.zeros_like(doc, dtype=tf.float32)
     qd_size = tf.minimum(qd_size, [max_q_len, max_d_len])
-    return query, doc, qd_size, relevance, parsed_features['qid'], parsed_features['docid']
+    return query, query_weight, doc, doc_weight, qd_size, relevance, \
+      parsed_features['qid'], parsed_features['docid']
 
 
   def build_graph(self):
@@ -349,8 +382,10 @@ class RRI(object):
         '''
         # dynamic query length of shape (batch_size, max_q_len)
         self.query = tf.placeholder(tf.int32, shape=[None, None], name='query')
+        self.query_weight = tf.placeholder(tf.int32, shape=[None, None], name='query_weight')
         # dynamic doc length of shape (batch_size, max_d_len)
         self.doc = tf.placeholder(tf.int32, shape=[None, None], name='doc')
+        self.doc_weight = tf.placeholder(tf.int32, shape=[None, None], name='doc_weight')
         # (batch_size, 2), the first column is query length, the second is doc length
         self.qd_size = tf.placeholder(tf.int32, shape=[None, 2], name='query_doc_size')
         # relevance signal (only useful when using pointwise)
@@ -374,10 +409,12 @@ class RRI(object):
           dataset = dataset.interleave(tf.data.TFRecordDataset, cycle_length=1, block_length=1)
           if paradigm == 'pointwise':
             dataset = dataset.map(functools.partial(parse_fn, 
-              max_q_len=self.max_q_len, max_d_len=self.max_d_len), num_parallel_calls=4)
+              max_q_len=self.max_q_len, max_d_len=self.max_d_len, 
+              has_weight=self.tfrecord_has_weight), num_parallel_calls=4)
           elif paradigm == 'pairwise':
             dataset = dataset.map(functools.partial(parse_fn, 
-              max_q_len=self.max_q_len, max_d_len=self.max_d_len), num_parallel_calls=4)
+              max_q_len=self.max_q_len, max_d_len=self.max_d_len, 
+              has_weight=self.tfrecord_has_weight), num_parallel_calls=4)
           if is_train:
             dataset = dataset.shuffle(buffer_size=10000)
           else:
@@ -417,8 +454,8 @@ class RRI(object):
         self.train_data_init_op = train_dataset.make_initializable_iterator()
         self.test_data_init_op = test_dataset.make_initializable_iterator()
         self.decision_data_init_op = decision_dataset.make_initializable_iterator()
-        self.query, self.doc, self.qd_size, self.relevance, \
-          self.qid, self.docid = dataset_iterator.get_next()
+        self.query, self.query_weight, self.doc, self.doc_weight, self.qd_size, \
+          self.relevance, self.qid, self.docid = dataset_iterator.get_next()
         self.query = tf.cast(self.query, dtype=tf.int32)
         self.doc = tf.cast(self.doc, dtype=tf.int32)
         self.qd_size = tf.cast(self.qd_size, dtype=tf.int32)
@@ -458,9 +495,10 @@ class RRI(object):
           word_vector=word_vector_variable, interaction=self.interaction, glimpse=self.glimpse,
           glimpse_fix_size=self.glimpse_fix_size, min_density=self.min_density, use_ratio=self.use_ratio,
           min_jump_offset=self.min_jump_offset, max_jump_offset2=self.max_jump_offset2,
-           jump=self.jump, represent=self.represent, 
+          jump=self.jump, represent=self.represent, 
           separate=self.separate, aggregate=self.aggregate, rnn_size=self.rnn_size, 
-          max_jump_offset=self.max_jump_offset, keep_prob=self.keep_prob_)
+          max_jump_offset=self.max_jump_offset, keep_prob=self.keep_prob_, 
+          query_weight=self.query_weight, doc_weight=self.doc_weight)
     initializer = tf.constant_initializer(1) if self.unsupervised else None
     if self.loss_func == 'classification':
       with vs.variable_scope('ClassificationLoss'):
@@ -470,9 +508,12 @@ class RRI(object):
         logit_b = tf.get_variable('logit_bias', 
           shape=[self.rel_level], initializer=tf.constant_initializer())
         logits = tf.nn.bias_add(tf.matmul(self.outputs, logit_w), logit_b)
-        self.scores = -tf.nn.softmax_cross_entropy_with_logits(
-          labels=tf.one_hot(tf.ones_like(self.relevance)*(self.rel_level-1), self.rel_level), 
-          logits=logits)
+        # The larger the last logits, the higher the score. Use logits is more reliable than
+        # using softmax_cross_entropy_with_logits because exp explodes easily.
+        self.scores = logits[:, -1]
+        #self.scores = -tf.nn.softmax_cross_entropy_with_logits(
+        #  labels=tf.one_hot(tf.ones_like(self.relevance)*(self.rel_level-1), self.rel_level), 
+        #  logits=logits)        
         self.losses = tf.nn.softmax_cross_entropy_with_logits(
           labels=tf.one_hot(self.relevance, self.rel_level), logits=logits)
         self.loss = tf.reduce_mean(self.losses)
@@ -619,7 +660,6 @@ class RRI(object):
       return
     with open('match_matrix_focus_test', 'w') if self.match_matrix_focus_debug \
       else NullContextManager(None) as mmf_fout:
-      print('!{}'.format(mmf_fout))
       for epoch in range(self.n_epochs):
         epoch += 1
         start = time.time()
@@ -740,11 +780,11 @@ class RRI(object):
                 #print(np.max(match_matrix[b], axis=1))
                 #print(np.max(match_matrix[b], axis=0))
                 # visualize match_matrix saliency (gradient)
-                saliency = np.abs(saliency)
-                top_s = np.argsort(-saliency[b].flatten())
-                print(saliency[b].flatten()[top_s[:10]])
-                print(match_matrix[b].flatten()[top_s[:10]])
-                print(min_density[b])
+                #saliency = np.abs(saliency)
+                #top_s = np.argsort(-saliency[b].flatten())
+                #print(saliency[b].flatten()[top_s[:10]])
+                #print(match_matrix[b].flatten()[top_s[:10]])
+                #print(min_density[b])
                 #cnn_vis.plot_saliency_map(match_matrix, saliency)
                 # visualize states
                 #print(states[1, b])
@@ -968,9 +1008,12 @@ def train_test():
     '''
     load data (tfrecord)
     '''
-    train_X, train_y = 'data/bing/train.prep.pairwise.tfrecord-???-of-???', None
-    test_X, test_y = 'data/bing/test.prep.pairwise.tfrecord-???-of-???', None
-    test_X_judge, test_y_judge = 'data/bing/test.prep.pointwise.tfrecord-???-of-???', None
+    train_X, train_y = os.path.join(args.data_dir, 
+      'train.prep.{}.tfrecord-???-of-???'.format(args.paradigm)), None
+    test_X, test_y = os.path.join(args.data_dir, 
+      'test.prep.{}.tfrecord-???-of-???'.format(args.paradigm)), None
+    test_X_judge, test_y_judge = os.path.join(args.data_dir, 
+      'test.prep.pointwise.tfrecord-???-of-???'), None
     max_q_len = max_q_len_consider
     max_d_len = max_d_len_consider
     batcher = None
