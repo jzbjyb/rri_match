@@ -409,12 +409,21 @@ def gen_pairwise():
     samples = load_train_test_file(fn, file_format=args.format, reverse=args.reverse)
     samples_gb_q = groupby(samples, lambda x: x[0])
     with open(fn_out, 'w') as fout:
+      all_pointwise = 0
+      all_pairwise = 0
       for q, q_samples in samples_gb_q:
         q_samples = list(q_samples)
+        count = 0
         for s1 in q_samples:
           for s2 in q_samples:
             if s1[2] > s2[2]:
+              count += 1
               fout.write('{}\t{}\t{}\t{}\n'.format(s1[0], s1[1], s2[1], s1[2]-s2[2]))
+        #print('query {}, #pointwise {}, #pairwise {}, ratio {}'.format(
+        #  q, len(q_samples), count, count/(len(q_samples) or 1)))
+        all_pointwise += len(q_samples)
+        all_pairwise += count
+      print('from {} to {} in {}'.format(all_pointwise, all_pairwise, fn_out))
 
 
 def gen_tfrecord(bow=False):

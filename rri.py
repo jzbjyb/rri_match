@@ -1,5 +1,6 @@
 import sys
 import tensorflow as tf
+import numpy as np
 from tensorflow.python.ops import variable_scope as vs
 from cnn import cnn, DynamicMaxPooling
 jumper = tf.load_op_library('./jumper.so')
@@ -115,6 +116,8 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
     get the representation based on location (j_t+1)
     '''
     bs = tf.shape(query)[0]
+    max_q_len = tf.shape(query)[1]
+    max_d_len = tf.shape(doc)[1]
     word_vector_dim = word_vector.get_shape().as_list()[1]
     separate = kwargs['separate']
     state_ta = kwargs['state_ta']
@@ -124,6 +127,8 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
     time = kwargs['time']
     is_stop = kwargs['is_stop']
     min_density = kwargs['min_density']
+    query_weight = kwargs['query_weight']
+    doc_weight = kwargs['doc_weight']
     cur_location = location_ta.read(time)
     cur_next_location = location_ta.read(time + 1)
     with vs.variable_scope('ReprCond'):
@@ -159,6 +164,65 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
         state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, 
             lambda: state_ta.write(0, tf.zeros([bs, 1], dtype=tf.float32)))
         representation = tf.reduce_sum(match_matrix, axis=[1,2])
+        representation = tf.expand_dims(representation, axis=1)
+    elif represent == 'sum_match_matrix_topk_weight_thre_kernel_hard':
+        '''
+        Use different kernels to first mask the match_matrix into several matrices. 
+        Then apply weight to each matrix to get several scores. The exact match is theoretically
+        equivalent to tfidf.
+        '''
+        #input_mu = np.array(list(range(number_of_bin+1))) * (1/number_of_bin)
+        input_mu = [0.8, 0.9, 1.0]
+        number_of_bin = len(input_mu)-1
+        input_sigma =  [0.1] * number_of_bin + [0.00001]
+        state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, 
+            lambda: state_ta.write(0, tf.zeros([bs, number_of_bin+1], dtype=tf.float32)))
+        print('mu: {}, sigma: {}'.format(input_mu, input_sigma))
+        mu = tf.constant(input_mu, dtype=tf.float32)
+        sigma = tf.constant(input_sigma, dtype=tf.float32)
+        mu = tf.reshape(mu, [1, 1, 1, number_of_bin+1])
+        sigma = tf.reshape(sigma, [1, 1, 1, number_of_bin+1])
+        # don't have to use mask because the weight is masked
+        match_matrix_max = tf.reduce_max(match_matrix, axis=2, keep_dims=True)
+        match_matrix = match_matrix * tf.cast(tf.equal(match_matrix, match_matrix_max), 
+            dtype=tf.float32)
+        match_matrix = tf.expand_dims(match_matrix, axis=-1)
+        match_matrix = tf.exp(-tf.square(match_matrix-mu) / \
+            (tf.square(sigma)*2))
+        match_matrix = match_matrix * tf.reshape(doc_weight, [bs, max_d_len, 1, 1]) * \
+            tf.reshape(query_weight, [bs, 1, max_q_len, 1])
+        representation = tf.reduce_sum(match_matrix, axis=[1, 2])
+        representation = tf.log(1+representation) # log is all used in K-NRM
+    elif represent == 'sum_match_matrix_topk_weight_thres_hard':
+        '''
+        Directly sum topk elements in each row of match_matrix without considering location.
+        In other words, each document choose topk similar words (>= thres) from the query.
+        The elements in the padding part of the matrix should be zero in this case.
+        '''
+        state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, 
+            lambda: state_ta.write(0, tf.zeros([bs, 1], dtype=tf.float32)))
+        match_matrix_max = tf.reduce_max(match_matrix, axis=2, keep_dims=True)
+        mmm_cond = tf.logical_and(tf.equal(match_matrix, match_matrix_max), match_matrix>=0.5)
+        match_matrix = match_matrix * tf.cast(mmm_cond, dtype=tf.float32)
+        match_matrix = match_matrix * tf.expand_dims(doc_weight, axis=2) * \
+            tf.expand_dims(query_weight, axis=1)
+        representation = tf.reduce_sum(match_matrix, axis=[1, 2])
+        representation = tf.expand_dims(representation, axis=1)
+    elif represent == 'sum_match_matrix_topk_weight_hard':
+        '''
+        Directly sum topk elements in each row of match_matrix without considering location.
+        In other words, each document choose topk similar words from the query.
+        The elements in the padding part of the matrix should be zero in this case.
+        '''
+        state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, 
+            lambda: state_ta.write(0, tf.zeros([bs, 1], dtype=tf.float32)))
+        #representation = tf.reduce_sum(tf.nn.top_k(match_matrix, k=1).values, axis=[1,2])
+        match_matrix_max = tf.reduce_max(match_matrix, axis=2, keep_dims=True)
+        match_matrix = match_matrix * tf.cast(tf.equal(match_matrix, match_matrix_max), 
+            dtype=tf.float32)
+        match_matrix = match_matrix * tf.expand_dims(doc_weight, axis=2) * \
+            tf.expand_dims(query_weight, axis=1)
+        representation = tf.reduce_sum(match_matrix, axis=[1, 2])
         representation = tf.expand_dims(representation, axis=1)
     elif represent == 'log_tf_hard':
         '''
@@ -405,14 +469,17 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction=['dot'], gl
             if interaction[0] == 'dot':
                 match_matrix = tf.matmul(doc_emb, tf.transpose(query_emb, [0, 2, 1]))
             elif interaction[0] == 'cosine':
+                doc_emb_norm = tf.sqrt(tf.reduce_sum(tf.square(doc_emb), axis=2, keep_dims=True))
+                doc_emb_norm += tf.cast(tf.equal(doc_emb_norm, 0), dtype=tf.float32)
+                query_emb_norm = tf.sqrt(tf.reduce_sum(tf.square(query_emb), axis=2, keep_dims=True))
+                query_emb_norm += tf.cast(tf.equal(query_emb_norm, 0), dtype=tf.float32)
+                doc_emb = doc_emb / doc_emb_norm
+                query_emb = query_emb / query_emb_norm
                 match_matrix = tf.matmul(doc_emb, tf.transpose(query_emb, [0, 2, 1]))
-                match_matrix /= tf.sqrt(tf.reduce_sum(doc_emb * doc_emb, axis=2, keep_dims=True)) * \
-                                tf.sqrt(tf.reduce_sum(query_emb * query_emb, axis=2, keep_dims=True))
         for interaction_update in interaction[1:]:
             if interaction_update == 'weight':
                 if query_weight is None or doc_weight is None:
                     raise Exception('no weight is provided')
-                print(match_matrix, doc_weight, query_weight)
                 match_matrix = match_matrix * tf.expand_dims(doc_weight, axis=2) * \
                     tf.expand_dims(query_weight, axis=1)
         if min_density != None:
@@ -531,7 +598,8 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction=['dot'], gl
                                        location_one_out, represent, max_jump_offset=max_jump_offset, \
                                        max_jump_offset2=max_jump_offset2, rnn_size=rnn_size, keep_prob=keep_prob, \
                                        separate=separate, location_ta=location_ta, state_ta=state_ta, doc_repr_ta=doc_repr_ta, \
-                                       query_repr_ta=query_repr_ta, time=time, is_stop=is_stop, min_density=min_density)
+                                       query_repr_ta=query_repr_ta, time=time, is_stop=is_stop, min_density=min_density, \
+                                       query_weight=query_weight, doc_weight=doc_weight)
             step = step + tf.where(is_stop, tf.zeros([bs], dtype=tf.int32), tf.ones([bs], dtype=tf.int32))
             return time + 1, is_stop, step, state_ta, doc_repr_ta, query_repr_ta, location_ta, dq_size_t, total_offset
         _, is_stop, step, state_ta, doc_repr_ta, query_repr_ta, location_ta, dq_size_t, total_offset = \

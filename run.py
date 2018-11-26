@@ -225,8 +225,8 @@ class RRI(object):
          vocab=None, word_vector_trainable=True, use_pad_word=True, 
          interaction='dot', glimpse='fix_hard', glimpse_fix_size=None, min_density=None, use_ratio=False, 
          min_jump_offset=1, jump='max_hard', represent='sum_hard', separate=False, aggregate='max', rnn_size=None, 
-         max_jump_offset=None, max_jump_offset2=None, rel_level=2, loss_func='regression', keep_prob=1.0, 
-         paradigm='pointwise', learning_rate=0.1, random_seed=0, 
+         max_jump_offset=None, max_jump_offset2=None, rel_level=2, loss_func='regression', margin=1.0, 
+         keep_prob=1.0, paradigm='pointwise', learning_rate=0.1, random_seed=0, 
          n_epochs=100, batch_size=100, batch_num=None, batcher=None, verbose=1, save_epochs=None, reuse_model=None, 
          save_model=None, summary_path=None, tfrecord=False, unsupervised=False):
     self.max_q_len = max_q_len
@@ -252,6 +252,7 @@ class RRI(object):
     self.max_jump_offset2 = max_jump_offset2
     self.rel_level = rel_level
     self.loss_func = loss_func
+    self.margin = margin
     self.keep_prob = keep_prob
     self.paradigm = paradigm
     self.learning_rate = learning_rate
@@ -416,7 +417,7 @@ class RRI(object):
               max_q_len=self.max_q_len, max_d_len=self.max_d_len, 
               has_weight=self.tfrecord_has_weight), num_parallel_calls=4)
           if is_train:
-            dataset = dataset.shuffle(buffer_size=10000)
+            dataset = dataset.shuffle(buffer_size=100000)
           else:
             dataset = dataset
           if paradigm == 'pairwise':
@@ -533,7 +534,7 @@ class RRI(object):
         score_b = tf.get_variable('score_bias', shape=[1], initializer=tf.constant_initializer())
         self.scores = tf.squeeze(tf.nn.bias_add(tf.matmul(self.outputs, score_w), score_b))
         pairwise_scores = tf.reshape(self.scores, [-1, 2])
-        self.losses = tf.maximum(0.0, 1 - pairwise_scores[:, 0] + pairwise_scores[:, 1])
+        self.losses = tf.maximum(0.0, self.margin-pairwise_scores[:, 0]+pairwise_scores[:, 1])
         self.loss = tf.reduce_mean(self.losses)
         decision = tf.cast(pairwise_scores[:, 0] > pairwise_scores[:, 1], dtype=tf.int32)
         self.acc, self.acc_op = tf.metrics.accuracy(labels=tf.ones_like(decision), predictions=decision)
@@ -870,10 +871,22 @@ class RRI(object):
       try:
         if self.loss_func == 'classification' and self.rel_level != 2:
           raise Exception(RRI.DECISION_EXCEPTION)
-        scores, loss, qid, docid, _, acc, match_matrix, min_density, qd_size, relevance = \
-          self.session_.run([self.scores, self.loss, self.qid, self.docid, self.acc_op, self.acc, 
-            self.rri_info['match_matrix'], self.rri_info['min_density'], self.qd_size, self.relevance], 
-            feed_dict={self.handle: decision_handle})
+        if self.loss_func == 'pairwise_margin':
+          '''
+          In pairwise setting, the training graph (pairwise) and the ranking graph (pointwise) 
+          are different. So loss and acc can not be accessed.
+          '''
+          scores, qid, docid, match_matrix, min_density, qd_size, relevance = \
+            self.session_.run([self.scores, self.qid, self.docid, 
+              self.rri_info['match_matrix'], self.rri_info['min_density'], self.qd_size, 
+              self.relevance], feed_dict={self.handle: decision_handle})
+        else:
+          scores, loss, _, acc, qid, docid, match_matrix, min_density, qd_size, relevance = \
+            self.session_.run([self.scores, self.loss, self.acc_op, self.acc, self.qid, self.docid, 
+              self.rri_info['match_matrix'], self.rri_info['min_density'], self.qd_size, 
+              self.relevance], feed_dict={self.handle: decision_handle})
+          acc_list.append(acc)
+          loss_list.append(loss)
         #density = np.max(match_matrix, axis=2)
         #min_density = 0.3 * np.max(density, axis=1) + 0.7 * (np.sum(density, axis=1) / qd_size[:, 1])
         #min_density = np.percentile(density, 80, axis=1)
@@ -886,8 +899,6 @@ class RRI(object):
         #    input()
         #[rel_density.append(d) for i, d in enumerate(left_density) if relevance[i] > 0]
         #[nonrel_density.append(d) for i, d in enumerate(left_density) if relevance[i] <= 0]
-        acc_list.append(acc)
-        loss_list.append(loss)
         score_list.extend(scores)
         [q_list.append(q.decode('utf-8')) for q in qid]
         [doc_list.append(d.decode('utf-8')) for d in docid]
@@ -907,10 +918,13 @@ class RRI(object):
       feed_dict = self.feed_dict_postprocess(fd, is_train=False)
       if self.loss_func == 'classification' and self.rel_level != 2:
         raise Exception(RRI.DECISION_EXCEPTION)
-      scores, loss, _, acc = self.session_.run([self.scores, self.loss, self.acc_op, self.acc], 
-        feed_dict=feed_dict)
-      acc_list.append(acc)
-      loss_list.append(loss)
+      if self.loss_func == 'pairwise_margin':
+        scores, = self.session_.run([self.scores], feed_dict=feed_dict)
+      else:
+        scores, loss, _, acc = self.session_.run([self.scores, self.loss, self.acc_op, self.acc], 
+          feed_dict=feed_dict)
+        acc_list.append(acc)
+        loss_list.append(loss)
       score_list.extend(scores)
       [q_list.append(q) for q in fd['qid']]
       [doc_list.append(d) for d in fd['docid']]
@@ -1052,6 +1066,7 @@ def train_test():
     'max_jump_offset2': max_q_len, 
     'rel_level': rel_level, 
     'loss_func': 'classification',
+    'margin': 1.0,
     'keep_prob': 1.0, 
     'paradigm': args.paradigm,
     'learning_rate': 0.0002, 
@@ -1089,13 +1104,13 @@ def train_test():
       ranks, loss, acc = rri.decision_function(test_X_judge, test_y_judge)
       scores = evaluate(ranks, test_qd_judge, metric=average_precision, top_k=10000)
       avg_score = np.mean(list(scores.values()))
-    if not os.path.exists('ranking'):
-      os.mkdir('ranking')
-    json.dump(ranks, open('ranking/ranking.{}.json'.format(i), 'w'))
-    if i % 5 == 0:
-      w2v_update = rri.get_w2v()
-      wv.update(w2v_update)
-      wv.save_to_file('w2v_update')
+    #if not os.path.exists('ranking'):
+    #  os.mkdir('ranking')
+    #json.dump(ranks, open('ranking/ranking.{}.json'.format(i), 'w'))
+    #if i % 5 == 0:
+    #  w2v_update = rri.get_w2v()
+    #  wv.update(w2v_update)
+    #  wv.save_to_file('w2v_update')
     print('\t{:>7}:{:>5.3f}:{:>5.3f}:{:>5.3f}'
       .format('test_{:>3.1f}'.format((time.time()-start)/60), 
         loss, acc, avg_score), end='', flush=True)

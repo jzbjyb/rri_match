@@ -165,6 +165,8 @@ def load_train_test_file(filepath, file_format='ir', reverse=False):
             elif filepath.endswith('pairwise'):
                 if file_format == 'ir':
                     q, d1, d2, r = l.split('\t')
+                elif file_format == 'text':
+                    q, d1, d2, r = l.split('\t')
                 else:
                     raise Exception()
                 samples.append((q, d1, d2, float(r)))
