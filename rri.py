@@ -165,6 +165,43 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
             lambda: state_ta.write(0, tf.zeros([bs, 1], dtype=tf.float32)))
         representation = tf.reduce_sum(match_matrix, axis=[1,2])
         representation = tf.expand_dims(representation, axis=1)
+    elif represent == 'sum_match_matrix_kernel_hard':
+        '''
+        K-NRM-like kernels
+        '''
+        if 'input_mu' in kwargs and kwargs['input_mu'] != None:
+            input_mu = kwargs['input_mu']
+        else:
+            input_mu = np.array(list(range(-10,10+1,2)))/10
+        #input_mu = [1.0]
+        number_of_bin = len(input_mu)-1
+        input_sigma =  [0.1] * number_of_bin + [0.00001]
+        state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, 
+            lambda: state_ta.write(0, tf.zeros([bs, number_of_bin+1], dtype=tf.float32)))
+        print('mu: {}, sigma: {}'.format(input_mu, input_sigma))
+        mu = tf.constant(input_mu, dtype=tf.float32)
+        sigma = tf.constant(input_sigma, dtype=tf.float32)
+        mu = tf.reshape(mu, [1, 1, 1, number_of_bin+1])
+        sigma = tf.reshape(sigma, [1, 1, 1, number_of_bin+1])
+        # kernelize
+        match_matrix = tf.expand_dims(match_matrix, axis=-1)
+        # totally discard some part of the matrix
+        #discard_match_matrix = tf.logical_and(match_matrix>=-0.0, match_matrix<=0.4)
+        match_matrix = tf.exp(-tf.square(match_matrix-mu)/(tf.square(sigma)*2))
+        # have to use mask because the weight is masked
+        query_mask = tf.expand_dims(tf.range(max_q_len), dim=0) < tf.reshape(dq_size[1:], [bs, 1])
+        doc_mask = tf.expand_dims(tf.range(max_d_len), dim=0) < tf.reshape(dq_size[:1], [bs, 1])
+        query_mask = tf.cast(tf.reshape(query_mask, [bs, 1, max_q_len, 1]), dtype=tf.float32)
+        doc_mask = tf.cast(tf.reshape(doc_mask, [bs, max_d_len, 1, 1]), dtype=tf.float32)
+        match_matrix = match_matrix * query_mask * doc_mask
+        # totally discard some part of the matrix
+        #match_matrix *= 1-tf.cast(discard_match_matrix, dtype=tf.float32)
+        # sum and log
+        representation = tf.reduce_sum(match_matrix, axis=[1, 2])
+        # this is for manually masking out some kernels
+        #                 [-1 -0.8 -0.6 -0.4 -0.2  0.   0.2  0.4  0.6  0.8  1.]
+        #representation *= [[0,  0,    0,   1,   1,  0,    0,   0,   1,   1,  1]]
+        representation = tf.log(1+representation) # log is used in K-NRM
     elif represent == 'sum_match_matrix_topk_weight_thre_kernel_hard':
         '''
         Use different kernels to first mask the match_matrix into several matrices. 
@@ -192,7 +229,7 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
         match_matrix = match_matrix * tf.reshape(doc_weight, [bs, max_d_len, 1, 1]) * \
             tf.reshape(query_weight, [bs, 1, max_q_len, 1])
         representation = tf.reduce_sum(match_matrix, axis=[1, 2])
-        representation = tf.log(1+representation) # log is all used in K-NRM
+        representation = tf.log(1+representation) # log is used in K-NRM
     elif represent == 'sum_match_matrix_topk_weight_thres_hard':
         '''
         Directly sum topk elements in each row of match_matrix without considering location.
@@ -436,7 +473,7 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
 def rri(query, doc, dq_size, max_jump_step, word_vector, interaction=['dot'], glimpse='fix_hard', glimpse_fix_size=None,
         min_density=None, use_ratio=False, min_jump_offset=1, jump='max_hard', represent='sum_hard', separate=False, 
         aggregate='max', rnn_size=None, max_jump_offset=None, max_jump_offset2=None, keep_prob=1.0,
-        query_weight=None, doc_weight=None):
+        query_weight=None, doc_weight=None, input_mu=None):
     bs = tf.shape(query)[0]
     max_q_len = tf.shape(query)[1]
     max_d_len = tf.shape(doc)[1]
@@ -599,7 +636,7 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction=['dot'], gl
                                        max_jump_offset2=max_jump_offset2, rnn_size=rnn_size, keep_prob=keep_prob, \
                                        separate=separate, location_ta=location_ta, state_ta=state_ta, doc_repr_ta=doc_repr_ta, \
                                        query_repr_ta=query_repr_ta, time=time, is_stop=is_stop, min_density=min_density, \
-                                       query_weight=query_weight, doc_weight=doc_weight)
+                                       query_weight=query_weight, doc_weight=doc_weight, input_mu=input_mu)
             step = step + tf.where(is_stop, tf.zeros([bs], dtype=tf.int32), tf.ones([bs], dtype=tf.int32))
             return time + 1, is_stop, step, state_ta, doc_repr_ta, query_repr_ta, location_ta, dq_size_t, total_offset
         _, is_stop, step, state_ta, doc_repr_ta, query_repr_ta, location_ta, dq_size_t, total_offset = \

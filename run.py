@@ -224,11 +224,11 @@ class RRI(object):
   def __init__(self, max_q_len=0, max_d_len=0, max_jump_step=0, word_vector=None, oov_word_vector=None,
          vocab=None, word_vector_trainable=True, use_pad_word=True, 
          interaction='dot', glimpse='fix_hard', glimpse_fix_size=None, min_density=None, use_ratio=False, 
-         min_jump_offset=1, jump='max_hard', represent='sum_hard', separate=False, aggregate='max', rnn_size=None, 
-         max_jump_offset=None, max_jump_offset2=None, rel_level=2, loss_func='regression', margin=1.0, 
+         min_jump_offset=1, jump='max_hard', represent='sum_hard', input_mu=None, separate=False, aggregate='max', 
+         rnn_size=None, max_jump_offset=None, max_jump_offset2=None, rel_level=2, loss_func='regression', margin=1.0, 
          keep_prob=1.0, paradigm='pointwise', learning_rate=0.1, random_seed=0, 
          n_epochs=100, batch_size=100, batch_num=None, batcher=None, verbose=1, save_epochs=None, reuse_model=None, 
-         save_model=None, summary_path=None, tfrecord=False, unsupervised=False):
+         save_model=None, summary_path=None, tfrecord=False, tfrecord_has_weight=False, unsupervised=False):
     self.max_q_len = max_q_len
     self.max_d_len = max_d_len
     self.max_jump_step = max_jump_step
@@ -245,6 +245,7 @@ class RRI(object):
     self.min_jump_offset = min_jump_offset
     self.jump = jump
     self.represent = represent
+    self.input_mu = input_mu
     self.separate = separate
     self.aggregate = aggregate
     self.rnn_size = rnn_size
@@ -269,7 +270,7 @@ class RRI(object):
     self.tfrecord = tfrecord
     self.unsupervised = unsupervised
     self.match_matrix_focus_debug = False
-    self.tfrecord_has_weight = True # wether use doc/query weight or not
+    self.tfrecord_has_weight = tfrecord_has_weight # wether use doc/query weight or not
 
 
   @staticmethod
@@ -465,6 +466,7 @@ class RRI(object):
         self.docid = tf.squeeze(self.docid)
       self.keep_prob_ = tf.placeholder(tf.float32) # dropout prob
     with vs.variable_scope('InputProcessing'):
+      print('word vector trainable: {}'.format(self.word_vector_trainable))
       self.word_vector_variable = tf.get_variable('word_vector', self.word_vector.shape,
         initializer=tf.constant_initializer(self.word_vector), 
         trainable=self.word_vector_trainable)
@@ -499,7 +501,7 @@ class RRI(object):
           jump=self.jump, represent=self.represent, 
           separate=self.separate, aggregate=self.aggregate, rnn_size=self.rnn_size, 
           max_jump_offset=self.max_jump_offset, keep_prob=self.keep_prob_, 
-          query_weight=self.query_weight, doc_weight=self.doc_weight)
+          query_weight=self.query_weight, doc_weight=self.doc_weight, input_mu=self.input_mu)
     initializer = tf.constant_initializer(1) if self.unsupervised else None
     if self.loss_func == 'classification':
       with vs.variable_scope('ClassificationLoss'):
@@ -1058,7 +1060,8 @@ def train_test():
     'use_ratio': False, 
     'min_jump_offset': 3, 
     'jump': 'min_density_hard', 
-    'represent': 'interaction_cnn_hard', 
+    'represent': 'interaction_cnn_hard',
+    'input_mu': None, 
     'separate': False, 
     'aggregate': 'max', 
     'rnn_size': 16, 
@@ -1107,7 +1110,7 @@ def train_test():
     #if not os.path.exists('ranking'):
     #  os.mkdir('ranking')
     #json.dump(ranks, open('ranking/ranking.{}.json'.format(i), 'w'))
-    #if i % 5 == 0:
+    #if i % 1 == 0:
     #  w2v_update = rri.get_w2v()
     #  wv.update(w2v_update)
     #  wv.save_to_file('w2v_update')
