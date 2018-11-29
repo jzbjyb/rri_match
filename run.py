@@ -268,9 +268,9 @@ class RRI(object):
     self.save_model = save_model
     self.summary_path = summary_path
     self.tfrecord = tfrecord
+    self.tfrecord_has_weight = tfrecord_has_weight # wether use doc/query weight or not
     self.unsupervised = unsupervised
     self.match_matrix_focus_debug = False
-    self.tfrecord_has_weight = tfrecord_has_weight # wether use doc/query weight or not
 
 
   @staticmethod
@@ -1084,6 +1084,7 @@ def train_test():
     'save_model': args.save_model_path, 
     'summary_path': args.tf_summary_path,
     'tfrecord': args.tfrecord,
+    'tfrecord_has_weight': False,
     'unsupervised': False,
   }
   if args.config != None:

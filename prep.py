@@ -475,7 +475,9 @@ def gen_tfrecord(bow=False):
         db = d.encode('utf-8')
         features['docid'] = tf.train.Feature(bytes_list=tf.train.BytesList(value=[db]))
         features['doc'] = tf.train.Feature(int64_list=tf.train.Int64List(value=doc_raw[d]))
-        features['doc_weight'] = tf.train.Feature(float_list=tf.train.FloatList(value=doc_raw_weight[d]))
+        if bow:
+          features['doc_weight'] = tf.train.Feature(
+            float_list=tf.train.FloatList(value=doc_raw_weight[d]))
         features['doclen'] = tf.train.Feature(
           int64_list=tf.train.Int64List(value=[len(doc_raw[d])]))
       elif args.paradigm == 'pairwise':
@@ -487,15 +489,20 @@ def gen_tfrecord(bow=False):
         features['docid2'] = tf.train.Feature(bytes_list=tf.train.BytesList(value=[d2b]))
         features['doc1'] = tf.train.Feature(int64_list=tf.train.Int64List(value=doc_raw[d1]))
         features['doc2'] = tf.train.Feature(int64_list=tf.train.Int64List(value=doc_raw[d2]))
-        features['doc1_weight'] = tf.train.Feature(float_list=tf.train.FloatList(value=doc_raw_weight[d1]))
-        features['doc2_weight'] = tf.train.Feature(float_list=tf.train.FloatList(value=doc_raw_weight[d2]))
+        if bow:
+          features['doc1_weight'] = tf.train.Feature(
+            float_list=tf.train.FloatList(value=doc_raw_weight[d1]))
+          features['doc2_weight'] = tf.train.Feature(
+            float_list=tf.train.FloatList(value=doc_raw_weight[d2]))
         features['doc1len'] = tf.train.Feature(
           int64_list=tf.train.Int64List(value=[len(doc_raw[d1])]))
         features['doc2len'] = tf.train.Feature(
           int64_list=tf.train.Int64List(value=[len(doc_raw[d2])]))
       features['qid'] = tf.train.Feature(bytes_list=tf.train.BytesList(value=[qb]))
       features['query'] = tf.train.Feature(int64_list=tf.train.Int64List(value=query_raw[q]))
-      features['query_weight'] = tf.train.Feature(float_list=tf.train.FloatList(value=query_raw_weight[q]))
+      if bow:
+        features['query_weight'] = tf.train.Feature(
+          float_list=tf.train.FloatList(value=query_raw_weight[q]))
       features['label'] = tf.train.Feature(float_list=tf.train.FloatList(value=[r]))
       features['qlen'] = tf.train.Feature(int64_list=tf.train.Int64List(value=[len(query_raw[q])]))
       f = tf.train.Features(feature=features)
@@ -571,9 +578,16 @@ if __name__ == '__main__':
   elif args.action == 'handle_windows':
     handle_windows()
   elif args.action == 'gen_pairwise':
+    '''
+    usage: python prep.py -a gen_pairwise -d data_dir -f text --reverse
+    '''
     gen_pairwise()
   elif args.action == 'gen_tfrecord':
-    gen_tfrecord(bow=True)
+    '''
+    usage: python prep.py -a gen_tfrecord -d data_dir -f text -p pointwise
+    remember to modify the bow parameter.
+    '''
+    gen_tfrecord(bow=False)
   elif args.action == 'drop_negative':
     # random drop some negative samples to make training balanced
     drop_negative()
