@@ -19,6 +19,8 @@ if __name__ == '__main__':
   parser.add_argument('-r', '--train_test_ratio', help='the ratio of train and test dataset',
             type=float, default=0.8)
   parser.add_argument('-w', '--word_vector_path', help='the filepath of word vector', type=str)
+  parser.add_argument('--first_line', help='whether the word vector file has the first line', 
+    action='store_true')
   parser.add_argument('-D', '--debug', help='whether to use debug log level', action='store_true')
   parser.add_argument('--shuqi_bing_web_dir', help='shuqi\'s html dir', type=str)
   parser.add_argument('--min_query_freq', help='minimum query frequency', type=int, default=100)
@@ -181,11 +183,11 @@ def preprocess():
 
 def word_vector_transform():
   print('loading word vector ...')
-  wv = WordVector(filepath=args.word_vector_path, first_line=False)
-  vocab = Vocab(filepath=os.path.join(args.data_dir, 'vocab'), file_format='text')
+  wv = WordVector(filepath=args.word_vector_path, first_line=args.first_line)
+  vocab = Vocab(filepath=os.path.join(args.data_dir, 'vocab'), file_format=args.format)
   print('transforming ...')
   wv.transform(vocab.get_word_list(), oov_filepath=os.path.join(args.data_dir, 'oov.txt'), 
-    oov_at_end=True)
+    oov_at_end=False) # don't use oov_at_end because it is problematic
   print('saving ...')
   wv.save_to_file(os.path.join(args.data_dir, 'w2v'))
 
@@ -560,6 +562,11 @@ if __name__ == '__main__':
   elif args.action == 'gen':
     generate_train_test()
   elif args.action == 'w2v':
+    '''
+    usage: python prep.py -a w2v -d data_dir -f text --word_vector_path word_vec_path --first_line
+    remember to remove first_line when needed.
+    don't use oov_at_end.
+    '''
     word_vector_transform()
   elif args.action == 'prep_query_log':
     prep_query_log()

@@ -627,7 +627,6 @@ class RRI(object):
         self.saver.restore(self.session_, self.reuse_model)
       else: # initialize model
         self.session_.run(self.init_all_vars)
-        self.session_.run(self.init_all_vars_local)
       #self.session_ = tf_debug.LocalCLIDebugWrapperSession(self.session_)
 
 
@@ -674,6 +673,9 @@ class RRI(object):
             # When batch_num is used, we don't need to re-initialize the dataset.
             self.session_.run(self.train_data_init_op.initializer, 
               feed_dict={self.tfrecord_pattern: X})
+        # Local variables (total and count in accuracy operations) 
+        # should be initialized every epoch
+        self.session_.run(self.init_all_vars_local)
         #for i, (fd, feed_time) in enumerate(self.batcher(X, y, self.batch_size, use_permutation=True, batch_num=self.batch_num)):
         for i, (fd, feed_time) in enumerate(batcher_wrapper()):
           feed_time_all += feed_time
@@ -820,15 +822,17 @@ class RRI(object):
     test_handle = self.session_.run(self.test_data_init_op.string_handle())
     self.session_.run(self.test_data_init_op.initializer, 
       feed_dict={self.tfrecord_pattern: test_file_pattern})
+    self.session_.run(self.init_all_vars_local)
     while True:
       try:
-        loss, _, acc = self.session_.run([self.loss, self.acc_op, self.acc], 
+        loss, _ = self.session_.run([self.loss, self.acc_op], 
           feed_dict={self.handle: test_handle})
+        acc = self.session_.run(self.acc)
         acc_list.append(acc)
         loss_list.append(loss)
       except tf.errors.OutOfRangeError:
         break
-    return np.mean(loss_list), np.mean(acc_list)
+    return np.mean(loss_list), acc_list[-1] if len(acc_list)>0 else np.nan
 
 
   def test_placeholder(self, X, y=None):
@@ -836,12 +840,14 @@ class RRI(object):
     if not hasattr(self, 'session_'):
       raise AttributeError(RRI.NOT_FIT_EXCEPTION)
     loss_list, acc_list = [], []
+    self.session_.run(self.init_all_vars_local)
     for i, (fd, feed_time) in enumerate(self.batcher(X, y, self.batch_size, use_permutation=False)):
       feed_dict = self.feed_dict_postprocess(fd, is_train=False)
-      loss, _, acc = self.session_.run([self.loss, self.acc_op, self.acc], feed_dict=feed_dict)
+      loss, _ = self.session_.run([self.loss, self.acc_op], feed_dict=feed_dict)
+      acc = self.session_.run(self.acc)
       acc_list.append(acc)
       loss_list.append(loss)
-    return np.mean(loss_list), np.mean(acc_list)
+    return np.mean(loss_list), acc_list[-1] if len(acc_list)>0 else np.nan
 
 
   def get_ranking(self, q_list, doc_list, score_list):
@@ -869,6 +875,7 @@ class RRI(object):
     decision_handle = self.session_.run(self.decision_data_init_op.string_handle())
     self.session_.run(self.decision_data_init_op.initializer, 
       feed_dict={self.tfrecord_pattern: decision_file_pattern})
+    self.session_.run(self.init_all_vars_local)
     while True:
       try:
         if self.loss_func == 'classification' and self.rel_level != 2:
@@ -883,10 +890,11 @@ class RRI(object):
               self.rri_info['match_matrix'], self.rri_info['min_density'], self.qd_size, 
               self.relevance], feed_dict={self.handle: decision_handle})
         else:
-          scores, loss, _, acc, qid, docid, match_matrix, min_density, qd_size, relevance = \
-            self.session_.run([self.scores, self.loss, self.acc_op, self.acc, self.qid, self.docid, 
+          scores, loss, _, qid, docid, match_matrix, min_density, qd_size, relevance = \
+            self.session_.run([self.scores, self.loss, self.acc_op, self.qid, self.docid, 
               self.rri_info['match_matrix'], self.rri_info['min_density'], self.qd_size, 
               self.relevance], feed_dict={self.handle: decision_handle})
+          acc = self.session_.run(self.acc)
           acc_list.append(acc)
           loss_list.append(loss)
         #density = np.max(match_matrix, axis=2)
@@ -908,7 +916,7 @@ class RRI(object):
         break
     ranks = self.get_ranking(q_list, doc_list, score_list)
     #pickle.dump([rel_density, nonrel_density], open('density_test_tfpercentile_02.data', 'wb'))
-    return ranks, np.mean(loss_list), np.mean(acc_list)
+    return ranks, np.mean(loss_list), acc_list[-1] if len(acc_list)>0 else np.nan
 
 
   def decision_function_placeholder(self, X, y=None):
@@ -916,6 +924,7 @@ class RRI(object):
     if not hasattr(self, 'session_'):
       raise AttributeError(RRI.NOT_FIT_EXCEPTION)
     q_list, doc_list, score_list, loss_list, acc_list = [], [], [], [], []
+    self.session_.run(self.init_all_vars_local)
     for i, (fd, feed_time) in enumerate(self.batcher(X, y, self.batch_size, use_permutation=False)):
       feed_dict = self.feed_dict_postprocess(fd, is_train=False)
       if self.loss_func == 'classification' and self.rel_level != 2:
@@ -923,15 +932,16 @@ class RRI(object):
       if self.loss_func == 'pairwise_margin':
         scores, = self.session_.run([self.scores], feed_dict=feed_dict)
       else:
-        scores, loss, _, acc = self.session_.run([self.scores, self.loss, self.acc_op, self.acc], 
+        scores, loss, _ = self.session_.run([self.scores, self.loss, self.acc_op], 
           feed_dict=feed_dict)
+        acc = self.session_.run(self.acc)
         acc_list.append(acc)
         loss_list.append(loss)
       score_list.extend(scores)
       [q_list.append(q) for q in fd['qid']]
       [doc_list.append(d) for d in fd['docid']]
     ranks = self.get_ranking(q_list, doc_list, score_list)
-    return ranks, np.mean(loss_list), np.mean(acc_list)
+    return ranks, np.mean(loss_list), acc_list[-1] if len(acc_list)>0 else np.nan
 
 
 def train_test():
