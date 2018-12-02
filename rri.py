@@ -186,7 +186,8 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
         # kernelize
         match_matrix = tf.expand_dims(match_matrix, axis=-1)
         # totally discard some part of the matrix
-        #discard_match_matrix = tf.logical_and(match_matrix>=-0.0, match_matrix<=0.4)
+        #print('discard some part of the matrix in K-NRM')
+        #discard_match_matrix = tf.logical_and(match_matrix>=-0.1, match_matrix<=0.5)
         match_matrix = tf.exp(-tf.square(match_matrix-mu)/(tf.square(sigma)*2))
         # have to use mask because the weight is masked
         query_mask = tf.expand_dims(tf.range(max_q_len), dim=0) < tf.reshape(dq_size[1:], [bs, 1])
