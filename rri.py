@@ -53,6 +53,22 @@ def batch_where(cond, xs, ys):
     return [tf.where(cond, xs[i], ys[i]) for i in range(len(xs))]
 
 
+def mlp(x, architecture=[10], activation='relu'):
+    with vs.variable_scope('MultipleLayerPerceptron'):
+        for i, layer in enumerate(architecture):
+            with vs.variable_scope('Layer{}'.format(i+1)):
+                hidden_size = architecture[i]
+                w = tf.get_variable('weight', shape=[x.get_shape()[1], hidden_size])
+                b = tf.get_variable('bias', shape=[hidden_size], 
+                    initializer=tf.constant_initializer())
+                x = tf.nn.bias_add(tf.matmul(x, w), b)
+                if activation == 'relu':
+                    x = tf.nn.relu(x)
+                elif activation == 'tanh':
+                    x = tf.nn.tanh(x)
+    return x
+
+
 def get_glimpse_location(match_matrix, dq_size, location, glimpse):
     '''
     get next glimpse location (g_t+1) based on last jump location (j_t)
@@ -203,6 +219,10 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
         #                 [-1 -0.8 -0.6 -0.4 -0.2  0.   0.2  0.4  0.6  0.8  1.]
         #representation *= [[0,  0,    0,   1,   1,  0,    0,   0,   1,   1,  1]]
         representation = tf.log(1+representation) # log is used in K-NRM
+        # use a MLP to model interactions between evidence of different strength
+        mlp_arch = [number_of_bin+1, number_of_bin+1]
+        print('use MLP with structure {}'.format(mlp_arch))
+        representation = mlp(representation, architecture=mlp_arch, activation='relu')
     elif represent == 'sum_match_matrix_topk_weight_thre_kernel_hard':
         '''
         Use different kernels to first mask the match_matrix into several matrices. 
