@@ -124,10 +124,10 @@ def cnn_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vector, 
     if 'input_mu' in kwargs and kwargs['input_mu'] != None:
         input_mu = kwargs['input_mu']
     else:
-        input_mu = np.array(list(range(-10,10+1,2)))/10
+        input_mu = np.array(list(range(-10,10+1,2)))/50
     #input_mu = [1.0]
     number_of_bin = len(input_mu)-1
-    input_sigma =  [0.1] * number_of_bin + [0.00001]
+    input_sigma =  [0.1] * number_of_bin + [0.1]
     state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, 
         lambda: state_ta.write(0, tf.zeros([bs, number_of_bin+1], dtype=tf.float32)))
     print('mu: {}, sigma: {}'.format(input_mu, input_sigma))
@@ -156,7 +156,7 @@ def cnn_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vector, 
     #representation *= [[0,  0,    0,   1,   1,  0,    0,   0,   1,   1,  1]]
     #representation = tf.log(1+representation) # log is used in K-NRM
     # use a MLP to model interactions between evidence of different strength
-    mlp_arch = [number_of_bin+1, number_of_bin+1]
-    print('use MLP with structure {}'.format(mlp_arch))
-    representation = mlp(representation, architecture=mlp_arch, activation='relu')
+    #mlp_arch = [number_of_bin+1, number_of_bin+1]
+    #print('use MLP with structure {}'.format(mlp_arch))
+    #representation = mlp(representation, architecture=mlp_arch, activation='relu')
     return state_ta, representation

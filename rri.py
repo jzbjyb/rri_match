@@ -168,7 +168,7 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
         representation = tf.expand_dims(representation, axis=1)
     elif represent == 'cnn_rnn_hard':
         state_ta, representation = cnn_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, 
-            word_vector, threshold=0.0, **kwargs)
+            word_vector, threshold=0.3, **kwargs)
     elif represent == 'sum_match_matrix_kernel_hard':
         '''
         K-NRM-like kernels
