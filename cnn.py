@@ -6,6 +6,22 @@ import numpy as np
 from utils import printoptions
 
 
+def mlp(x, architecture=[10], activation='relu'):
+    with vs.variable_scope('MultipleLayerPerceptron'):
+        for i, layer in enumerate(architecture):
+            with vs.variable_scope('Layer{}'.format(i+1)):
+                hidden_size = architecture[i]
+                w = tf.get_variable('weight', shape=[x.get_shape()[1], hidden_size])
+                b = tf.get_variable('bias', shape=[hidden_size], 
+                    initializer=tf.constant_initializer())
+                x = tf.nn.bias_add(tf.matmul(x, w), b)
+                if activation == 'relu':
+                    x = tf.nn.relu(x)
+                elif activation == 'tanh':
+                    x = tf.nn.tanh(x)
+    return x
+
+
 class DynamicMaxPooling(object):
     def __init__(self, dim=2, shape=None):
         self.conv_dim = dim

@@ -2,7 +2,8 @@ import sys
 import tensorflow as tf
 import numpy as np
 from tensorflow.python.ops import variable_scope as vs
-from cnn import cnn, DynamicMaxPooling
+from cnn import cnn, DynamicMaxPooling, mlp
+from represent import cnn_rnn
 jumper = tf.load_op_library('./jumper.so')
 DELTA = 1e-5 # used to avoid dividing zero
 
@@ -51,22 +52,6 @@ def batch_where(cond, xs, ys):
         xs = tf.ones_like(ys[0])
         xs = [xs] * len(ys)
     return [tf.where(cond, xs[i], ys[i]) for i in range(len(xs))]
-
-
-def mlp(x, architecture=[10], activation='relu'):
-    with vs.variable_scope('MultipleLayerPerceptron'):
-        for i, layer in enumerate(architecture):
-            with vs.variable_scope('Layer{}'.format(i+1)):
-                hidden_size = architecture[i]
-                w = tf.get_variable('weight', shape=[x.get_shape()[1], hidden_size])
-                b = tf.get_variable('bias', shape=[hidden_size], 
-                    initializer=tf.constant_initializer())
-                x = tf.nn.bias_add(tf.matmul(x, w), b)
-                if activation == 'relu':
-                    x = tf.nn.relu(x)
-                elif activation == 'tanh':
-                    x = tf.nn.tanh(x)
-    return x
 
 
 def get_glimpse_location(match_matrix, dq_size, location, glimpse):
@@ -181,6 +166,9 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
             lambda: state_ta.write(0, tf.zeros([bs, 1], dtype=tf.float32)))
         representation = tf.reduce_sum(match_matrix, axis=[1,2])
         representation = tf.expand_dims(representation, axis=1)
+    elif represent == 'cnn_rnn_hard':
+        state_ta, representation = cnn_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, 
+            word_vector, threshold=0.0, **kwargs)
     elif represent == 'sum_match_matrix_kernel_hard':
         '''
         K-NRM-like kernels
