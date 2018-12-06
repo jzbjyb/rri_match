@@ -613,9 +613,11 @@ class RRI(object):
       self.graph_ = tf.Graph()
       with self.graph_.as_default():
         tf.set_random_seed(self.random_seed)
+        #with vs.variable_scope('RRI', initializer=
+        #  tf.truncated_normal_initializer(mean=0.0, stddev=1e-1, dtype=tf.float32, 
+        #    seed=self.random_seed)) as scope:
         with vs.variable_scope('RRI', initializer=
-          tf.truncated_normal_initializer(mean=0.0, stddev=1e-1, dtype=tf.float32, 
-            seed=self.random_seed)) as scope:
+          tf.glorot_uniform_initializer(seed=self.random_seed)) as scope:
           self.build_graph()
       config = tf.ConfigProto()
       config.allow_soft_placement = True
@@ -703,7 +705,7 @@ class RRI(object):
               if trace_op:
                 profiler_opts = builder(builder.time_and_memory()).order_by('micros').build()
                 tf.profiler.profile(self.graph_, run_meta=run_metadata, cmd='scope', options=profiler_opts)
-                input('press to continue')
+                #input('press to continue')
               if trace_graph:
                 #profiler.add_step(step=i, run_meta=run_metadata)
                 #profiler_opts_builder = builder(builder.time_and_memory())
@@ -1074,7 +1076,7 @@ def train_test():
     'input_mu': None, 
     'separate': False, 
     'aggregate': 'max', 
-    'rnn_size': 16, 
+    'rnn_size': 128, 
     'max_jump_offset': max_d_len, 
     'max_jump_offset2': max_q_len, 
     'rel_level': rel_level, 

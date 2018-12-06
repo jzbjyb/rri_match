@@ -33,27 +33,6 @@ def dynamic_split_and_pad_while_loop(x, sp, axis):
   )
   return piece.stack()
 
-def dynamic_split_and_pad(x, sp, axis, max_len):
-  sp_dim = tf.shape(sp)[0]
-  sp = tf.pad(sp, [[0, max_len-sp_dim]])
-  sp.set_shape([max_len])
-  print('start split')
-  piece = tf.split(x, sp, axis=axis)
-  print('end split')
-  max_piece_len = tf.reduce_max([tf.shape(p)[axis] for p in piece])
-  
-  print('start piece')
-  piece = [tf.cond(tf.greater(tf.shape(p)[axis], 0), 
-    lambda: tf.pad(p, get_padding(p, axis, [0, max_piece_len-tf.shape(p)[axis]]), 
-    'CONSTANT', constant_values=0),  p) for p in piece]
-  print('end piece')
-  def get_shape(x, axis, new_shape):
-    shape = tf.shape(axis)
-    shape = [shape[s] for s in range(len(x.get_shape()))]
-    shape = shape[:axis] + new_shape + shape[axis+1:]
-    return shape
-  return tf.reshape(tf.concat(piece, axis=axis), get_shape(x, axis, [sp_dim, max_piece_len]))
-
 def piece_rnn(cond, seq, seq_len, emb, **kwargs):
   # get length of each piece and number of pieces of each sample
   bs = tf.shape(cond)[0]
@@ -70,12 +49,25 @@ def piece_rnn(cond, seq, seq_len, emb, **kwargs):
   piece_num = tf.reduce_sum(tf.cast(cond_start, dtype=tf.int32), axis=1)
   # split piece based on piece_len
   piece = tf.boolean_mask(seq, cond)
-  piece = dynamic_split_and_pad_while_loop(piece, piece_len, axis=0)  
+  piece = dynamic_split_and_pad_while_loop(piece, piece_len, axis=0)
+  piece = tf.transpose(piece) # time major
   # represent each piece
-  rnn_cell = tf.nn.rnn_cell.GRUCell(kwargs['rnn_size'])
+  print('rnn size: {}'.format(kwargs['rnn_size']))
+  rnn_cell = tf.nn.rnn_cell.BasicRNNCell(kwargs['rnn_size'])
+  #rnn_cell = tf.nn.rnn_cell.GRUCell(kwargs['rnn_size'])
+  #rnn_cell = tf.contrib.cudnn_rnn.CudnnCompatibleGRUCell(kwargs['rnn_size'])
   initial_state = rnn_cell.zero_state(piece_len_dim, dtype=tf.float32)
+  piece_len = tf.Print(piece_len, [piece_len], message='piece len:', summarize=50)
+  piece_len = tf.Print(piece_len, [tf.reduce_max(piece_len)], message='piece len max:', summarize=1)
+  piece_len = tf.Print(piece_len, [tf.reduce_mean(tf.cast(piece_len, dtype=tf.float32))], message='piece len ave:', summarize=1)
+  piece_len = tf.Print(piece_len, [tf.shape(piece_len)[0]], message='piece len num:', summarize=1)
   outputs, state = tf.nn.dynamic_rnn(rnn_cell, tf.nn.embedding_lookup(emb, piece), 
-    initial_state=initial_state, sequence_length=piece_len, dtype=tf.float32)
+    initial_state=initial_state, sequence_length=piece_len, dtype=tf.float32, time_major=True, 
+    swap_memory=False)
+  #rnn = tf.contrib.cudnn_rnn.CudnnGRU(num_layers=1, num_units=kwargs['rnn_size'], 
+  #  input_size=emb.get_shape()[1].value, input_mode='linear_input', direction='unidirectional')
+  #outputs, state = rnn(piece, tf.zeros((1, piece_len_dim, kwargs['rnn_size'])))
+  #print(outputs, state)
   # split state based on piece_num
   state = dynamic_split_and_pad_while_loop(state, piece_num, axis=0)
   return state, piece_num
@@ -94,8 +86,9 @@ def cnn_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vector, 
   # use CNN to choose regions
   with vs.variable_scope('CNNRegionFinder'):
     cnn_decision = cnn(tf.expand_dims(match_matrix, axis=-1), 
-      architecture=[(5, 5, 1, 4), (1, 1), (5, 5, 4, 1), (1, 1)], activation='relu')
-    cnn_decision = tf.reshape(cnn_decision, tf.shape(cnn_decision)[:3]) >= thres
+      architecture=[(5, 5, 1, 4), (1, 1), (1, 1, 4, 1), (1, 1)], activation='tanh')
+    cnn_decision = tf.Print(cnn_decision, [cnn_decision[0, :20, :5, 0]], message='cnn', summarize=100)
+    cnn_decision = tf.reshape(cnn_decision, tf.shape(cnn_decision)[:3]) > thres
     doc_decision = tf.reduce_any(cnn_decision, axis=2)
     query_decision = tf.reduce_any(cnn_decision, axis=1)
     # mask out the words beyond the boundary
@@ -104,11 +97,10 @@ def cnn_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vector, 
     doc_decision = tf.logical_and(doc_decision, doc_mask)
     query_decision = tf.logical_and(query_decision, query_mask)
     doc_decision = tf.Print(doc_decision, 
-      [tf.reduce_mean(tf.reduce_sum(tf.cast(doc_decision, tf.int32), axis=1))], message='doc:')
+      [tf.reduce_mean(tf.reduce_sum(tf.cast(doc_decision, tf.int32), axis=1))], message='avg all doc piece:')
     query_decision = tf.Print(query_decision, 
-      [tf.reduce_mean(tf.reduce_sum(tf.cast(query_decision, tf.int32), axis=1))], message='query:')
+      [tf.reduce_mean(tf.reduce_sum(tf.cast(query_decision, tf.int32), axis=1))], message='avg all query piece:')
   with vs.variable_scope('RNNRegionRepresenter'):
-    # TODO: how to deal with max_piece_len_dim and max_piece_num_dim
     doc_piece_emb, doc_piece_num = piece_rnn(
       doc_decision, doc, dq_size[0], word_vector, **kwargs)
     vs.get_variable_scope().reuse_variables()

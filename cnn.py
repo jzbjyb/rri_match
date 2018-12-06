@@ -134,7 +134,7 @@ class DynamicMaxPooling(object):
 
 
 def cnn(x, architecture=[(3, 3, 1, 16), (1, 2, 2, 1)], activation='relu', dpool_index=None):
-    if activation not in {None, 'relu', 'tanh'}:
+    if activation not in {None, 'relu', 'tanh', 'sigmoid'}:
         raise Exception('not supported activation')
     if len(architecture) <= 0 or len(architecture) % 2 != 0:
         raise Exception('cnn architecture bug')
@@ -170,6 +170,8 @@ def cnn(x, architecture=[(3, 3, 1, 16), (1, 2, 2, 1)], activation='relu', dpool_
                 out = tf.nn.relu(out)
             elif activation == 'tanh':
                 out = tf.nn.tanh(out)
+            elif activation == 'sigmoid':
+                out = tf.nn.sigmoid(out)
             tf.add_to_collection('feature_map', out)
         with vs.variable_scope('pool{}'.format(layer)):
             if dpool_index is not None and layer == 1: # dynamic pooling
