@@ -228,7 +228,8 @@ class RRI(object):
          rnn_size=None, max_jump_offset=None, max_jump_offset2=None, rel_level=2, loss_func='regression', margin=1.0, 
          keep_prob=1.0, paradigm='pointwise', learning_rate=0.1, random_seed=0, 
          n_epochs=100, batch_size=100, batch_num=None, batcher=None, verbose=1, save_epochs=None, reuse_model=None, 
-         save_model=None, summary_path=None, tfrecord=False, tfrecord_has_weight=False, unsupervised=False):
+         save_model=None, summary_path=None, tfrecord=False, tfrecord_has_weight=False, unsupervised=False, 
+         small_dataset_num=-1):
     self.max_q_len = max_q_len
     self.max_d_len = max_d_len
     self.max_jump_step = max_jump_step
@@ -271,6 +272,8 @@ class RRI(object):
     self.tfrecord_has_weight = tfrecord_has_weight # wether use doc/query weight or not
     self.unsupervised = unsupervised
     self.match_matrix_focus_debug = False
+    # Use a subset of the datasetis for fast development. -1 means using all.
+    self.small_dataset_num = small_dataset_num
 
 
   @staticmethod
@@ -401,14 +404,35 @@ class RRI(object):
         tfrecord input
         '''
         def data_transform(dataset, paradigm='pointwise', is_train=True):
-          # Difference between train and test is that shuffle is only applied to train dataset.
+          # Procedure: interleave, take, (shuffle), (repeat), map, batch. () only for training.
+          # Difference between train and test is that shuffle and repeat are 
+          # only applied to train dataset.
           if paradigm == 'pointwise':
             parse_fn = RRI.parse_tfexample_fn_pointwise
           elif paradigm == 'pairwise':
             parse_fn = RRI.parse_tfexample_fn_pairwise
+          # Interleave
           if is_train:
             dataset = dataset.shuffle(buffer_size=1)
           dataset = dataset.interleave(tf.data.TFRecordDataset, cycle_length=1, block_length=1)
+          # Take
+          if self.small_dataset_num > 0:
+            # take different amount of samples for training and testing
+            ratio = 1 if is_train else 0.25
+            take_num = int(self.small_dataset_num * ratio)
+            print('use small dataset of size {}'.format(take_num))
+            dataset = dataset.take(take_num)
+          # Shuffle
+          if is_train:
+            dataset = dataset.shuffle(buffer_size=100000)
+          else:
+            dataset = dataset
+          # Repeat
+          if is_train and self.batch_num:
+            # If we go through all the samples using batch_num, we don't need to re-initialize 
+            # iterator of train dataset, which means that we need the repeat the dataset.
+            dataset = dataset.repeat()
+          # Map
           if paradigm == 'pointwise':
             dataset = dataset.map(functools.partial(parse_fn, 
               max_q_len=self.max_q_len, max_d_len=self.max_d_len, 
@@ -417,17 +441,10 @@ class RRI(object):
             dataset = dataset.map(functools.partial(parse_fn, 
               max_q_len=self.max_q_len, max_d_len=self.max_d_len, 
               has_weight=self.tfrecord_has_weight), num_parallel_calls=4)
-          if is_train:
-            dataset = dataset.shuffle(buffer_size=100000)
-          else:
-            dataset = dataset
           if paradigm == 'pairwise':
             # flatten pairwise samples
             dataset = dataset.flat_map(RRI.flat_map_tensor)
-          if is_train and self.batch_num:
-              # If we go through all the samples using batch_num, we don't need to re-initialize 
-              # iterator of train dataset, which means that we need the repeat the dataset.
-              dataset = dataset.repeat()
+          # Batch
           dataset = dataset.padded_batch(self.batch_size, padded_shapes=dataset.output_shapes)
           dataset = dataset.prefetch(self.batch_size)
           return dataset
@@ -1098,6 +1115,7 @@ def train_test():
     'tfrecord': args.tfrecord,
     'tfrecord_has_weight': False,
     'unsupervised': False,
+    'small_dataset_num': -1,
   }
   if args.config != None:
     model_config_.update(model_config)
