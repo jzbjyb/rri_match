@@ -127,17 +127,20 @@ def cnn_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vector, 
   print('threshold: {}'.format(thres))
   # use CNN to choose regions
   with vs.variable_scope('CNNRegionFinder'):
-    cnn_decision = cnn(tf.expand_dims(match_matrix, axis=-1), 
+    cnn_decision_value = cnn(tf.expand_dims(match_matrix, axis=-1), 
       architecture=[(5, 5, 1, 4), (1, 1), (1, 1, 4, 1), (1, 1)], activation='tanh')
-    cnn_decision = tf.Print(cnn_decision, [cnn_decision[0, :20, :5, 0]], message='cnn', summarize=100)
-    cnn_decision = tf.reshape(cnn_decision, tf.shape(cnn_decision)[:3]) > thres
-    doc_decision = tf.reduce_any(cnn_decision, axis=2)
-    query_decision = tf.reduce_any(cnn_decision, axis=1)
+    cnn_decision_value = tf.Print(cnn_decision_value, [cnn_decision_value[0, :20, :5, 0]], 
+      message='cnn', summarize=100)
+    cnn_decision = tf.reshape(cnn_decision_value, tf.shape(cnn_decision_value)[:3]) > thres
     # mask out the words beyond the boundary
     doc_mask = tf.expand_dims(tf.range(max_d_len), dim=0) < tf.reshape(dq_size[:1], [bs, 1])
     query_mask = tf.expand_dims(tf.range(max_q_len), dim=0) < tf.reshape(dq_size[1:], [bs, 1])
-    doc_decision = tf.logical_and(doc_decision, doc_mask)
-    query_decision = tf.logical_and(query_decision, query_mask)
+    cnn_decision = tf.logical_and(cnn_decision, tf.expand_dims(doc_mask, axis=2))
+    cnn_decision = tf.logical_and(cnn_decision, tf.expand_dims(query_mask, axis=1))
+    # make decision by "or"
+    doc_decision = tf.reduce_any(cnn_decision, axis=2)
+    query_decision = tf.reduce_any(cnn_decision, axis=1)
+    # print debug
     doc_decision = tf.Print(doc_decision, 
       [tf.reduce_mean(tf.reduce_sum(tf.cast(doc_decision, tf.int32), axis=1))], message='avg all doc piece:')
     query_decision = tf.Print(query_decision, 
