@@ -44,7 +44,7 @@ os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 if args.disable_gpu:
   print('diable GPU')
   os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 import tensorflow as tf
 from tensorflow.python.ops import variable_scope as vs
@@ -783,6 +783,7 @@ class RRI(object):
             with printoptions(precision=6, suppress=True, threshold=np.nan):
               cnn_vis = CNNVis()
               batch_size = len(fd['qid'])
+              print('match matrix size: {}'.format(match_matrix.shape))
               while True:
                 b = input('which sample between 0 and {} (y for break)'.format(batch_size))
                 if b == 'y':

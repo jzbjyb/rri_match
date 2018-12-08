@@ -3,6 +3,30 @@ from tensorflow.python.ops import variable_scope as vs
 import numpy as np
 from cnn import cnn, mlp
 
+def dynamic_split_and_pad_map_fn(x, sp):
+  # Always split on the first dimension.
+  max_len = tf.reduce_max(sp) # max piece length
+  piece_num = tf.shape(sp)[0] # number of pieces
+  ind = tf.range(piece_num)
+  sp_start = tf.reduce_sum(tf.expand_dims(sp, 0) * \
+    tf.cast(tf.expand_dims(ind, 1)>tf.expand_dims(ind, 0), dtype=tf.int32), axis=1)
+  def get_padding(p, axis, pad):
+      rank = len(p.get_shape())
+      padding = [[0,0]] * rank
+      padding[axis] = pad
+      return padding
+  def fn(elems):
+    return x[:max_len]
+  def fn1(elems):
+    start, offset = elems
+    this_piece = x[start:start+offset]
+    this_piece = tf.pad(this_piece, get_padding(this_piece, 0, [0, max_len-offset]), 
+      'CONSTANT', constant_values=0)
+    return this_piece
+  piece = tf.map_fn(fn, [sp_start, sp], dtype=x.dtype, 
+    parallel_iterations=1000, name='dynamic_split_map')
+  return piece
+
 def dynamic_split_and_pad_while_loop(x, sp, axis):
   max_len = tf.reduce_max(sp) # max piece length
   piece_num = tf.shape(sp)[0] # number of pieces
@@ -49,27 +73,45 @@ def piece_rnn(cond, seq, seq_len, emb, **kwargs):
   piece_num = tf.reduce_sum(tf.cast(cond_start, dtype=tf.int32), axis=1)
   # split piece based on piece_len
   piece = tf.boolean_mask(seq, cond)
-  piece = dynamic_split_and_pad_while_loop(piece, piece_len, axis=0)
+  piece = dynamic_split_and_pad_map_fn(piece, piece_len)
   piece = tf.transpose(piece) # time major
-  # represent each piece
-  print('rnn size: {}'.format(kwargs['rnn_size']))
-  rnn_cell = tf.nn.rnn_cell.BasicRNNCell(kwargs['rnn_size'])
-  #rnn_cell = tf.nn.rnn_cell.GRUCell(kwargs['rnn_size'])
-  #rnn_cell = tf.contrib.cudnn_rnn.CudnnCompatibleGRUCell(kwargs['rnn_size'])
-  initial_state = rnn_cell.zero_state(piece_len_dim, dtype=tf.float32)
+  # print debug
   piece_len = tf.Print(piece_len, [piece_len], message='piece len:', summarize=50)
   piece_len = tf.Print(piece_len, [tf.reduce_max(piece_len)], message='piece len max:', summarize=1)
   piece_len = tf.Print(piece_len, [tf.reduce_mean(tf.cast(piece_len, dtype=tf.float32))], message='piece len ave:', summarize=1)
-  piece_len = tf.Print(piece_len, [tf.shape(piece_len)[0]], message='piece len num:', summarize=1)
-  outputs, state = tf.nn.dynamic_rnn(rnn_cell, tf.nn.embedding_lookup(emb, piece), 
-    initial_state=initial_state, sequence_length=piece_len, dtype=tf.float32, time_major=True, 
-    swap_memory=False)
-  #rnn = tf.contrib.cudnn_rnn.CudnnGRU(num_layers=1, num_units=kwargs['rnn_size'], 
-  #  input_size=emb.get_shape()[1].value, input_mode='linear_input', direction='unidirectional')
-  #outputs, state = rnn(piece, tf.zeros((1, piece_len_dim, kwargs['rnn_size'])))
-  #print(outputs, state)
+  piece_len = tf.Print(piece_len, [piece_len_dim], message='piece len num:', summarize=1)
+  # represent each piece
+  print('rnn size: {}'.format(kwargs['rnn_size']))
+  # traditional RNN
+  #rnn_cell = tf.nn.rnn_cell.BasicRNNCell(kwargs['rnn_size'])
+  #rnn_cell = tf.nn.rnn_cell.GRUCell(kwargs['rnn_size'])
+  #rnn_cell = tf.contrib.cudnn_rnn.CudnnCompatibleGRUCell(kwargs['rnn_size'])
+  #initial_state = rnn_cell.zero_state(piece_len_dim, dtype=tf.float32)
+  #outputs, state = tf.nn.dynamic_rnn(rnn_cell, tf.nn.embedding_lookup(emb, piece), 
+  #  initial_state=initial_state, sequence_length=piece_len, dtype=tf.float32, time_major=True, 
+  #  swap_memory=False)
+  # CuDNN RNN
+  rnn_size = kwargs['rnn_size']
+  input_size = emb.get_shape()[1].value
+  rnn = tf.contrib.cudnn_rnn.CudnnRNNRelu(num_layers=1, num_units=rnn_size, 
+    input_size=input_size, input_mode='linear_input', direction='unidirectional')
+  rnn_param_size = rnn.params_size()
+  '''
+  with tf.control_dependencies(None):
+    # Variable cannot be initialized from a tensor created in while_loop.
+    # This is an ugly workaround.
+    rnn_init_param = tf.random_uniform([(rnn_size+input_size+2)*rnn_size], -0.1, 0.1)
+  rnn_param = tf.get_variable('rnn_params', initializer=rnn_init_param, validate_shape=False)
+  '''
+  rnn_param = tf.get_variable('rnn_params', shape=[(rnn_size+input_size+2)*rnn_size])
+  initial_state = tf.zeros((1, piece_len_dim, rnn_size), dtype=tf.float32)
+  outputs, state = rnn(tf.nn.embedding_lookup(emb, piece), initial_state, rnn_param)
+  # cudnn rnn does not support seq len, we need to do it manually.
+  piece_len = tf.expand_dims(piece_len, axis=0)
+  ind = tf.expand_dims(tf.range(tf.shape(outputs)[0]), axis=1)
+  state = tf.reshape(tf.boolean_mask(outputs, tf.equal(ind, piece_len-1)), [-1, rnn_size])
   # split state based on piece_num
-  state = dynamic_split_and_pad_while_loop(state, piece_num, axis=0)
+  state = dynamic_split_and_pad_map_fn(state, piece_num)
   return state, piece_num
 
 def cnn_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vector, **kwargs):
