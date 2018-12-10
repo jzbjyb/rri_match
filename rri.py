@@ -647,6 +647,16 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction=['dot'], gl
                      query_repr_ta=query_repr_ta, time=time, is_stop=is_stop, min_density=min_density, \
                      query_weight=query_weight, doc_weight=doc_weight, input_mu=input_mu)
       step = step + tf.where(is_stop, tf.zeros([bs], dtype=tf.int32), tf.ones([bs], dtype=tf.int32))
+      # early stop if all is processed
+      if jump.endswith('soft'):
+        new_stop = tf.reduce_any(
+          tf.stack(new_location[:2], axis=0)+tf.stack(new_location[2:], axis=0) > \
+          tf.cast(dq_size_t-1, tf.float32), axis=0)
+      elif jump.endswith('hard'):
+        new_stop = tf.reduce_any(
+          tf.stack(new_location[:2], axis=0)+tf.stack(new_location[2:], axis=0) > \
+          dq_size_t-1, axis=0)
+      is_stop = tf.logical_or(is_stop, new_stop)
       return time + 1, is_stop, step, state_ta, doc_repr_ta, query_repr_ta, location_ta, dq_size_t, total_offset
     _, is_stop, step, state_ta, doc_repr_ta, query_repr_ta, location_ta, dq_size_t, total_offset = \
       tf.while_loop(cond, body, [time, is_stop, step, state_ta, doc_repr_ta, query_repr_ta, 

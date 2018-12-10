@@ -55,6 +55,25 @@ def dynamic_split_and_pad_while_loop(x, sp, axis):
   )
   return piece.stack()
 
+def whole_rnn(seq, seq_len, emb, **kwargs):
+  bs = tf.shape(seq)[0]
+  rnn_size = kwargs['rnn_size']
+  input_size = emb.get_shape()[1].value
+  rnn = tf.contrib.cudnn_rnn.CudnnRNNRelu(num_layers=1, num_units=rnn_size, 
+    input_size=input_size, input_mode='linear_input', direction='unidirectional')
+  rnn_param = tf.get_variable('rnn_params', shape=[rnn_size+input_size+2, rnn_size])
+  initial_state = tf.zeros((1, bs, rnn_size), dtype=tf.float32)
+  rnn_input = tf.nn.embedding_lookup(emb, tf.transpose(seq))
+  outputs, state = rnn(rnn_input, initial_state, rnn_param)
+  # cudnn rnn does not support seq len, we need to do it manually.
+  seq_len = tf.expand_dims(seq_len, axis=0)
+  ind = tf.expand_dims(tf.range(tf.shape(outputs)[0]), axis=1)
+  state = tf.reshape(tf.boolean_mask(outputs, tf.equal(ind, seq_len-1)), [-1, rnn_size])
+  #state = tf.Print(state, [state[:10, :5]], message='state:', summarize=50)
+  # split state based on piece_num
+  state = tf.expand_dims(state, axis=1)
+  return state, tf.ones([bs], dtype=tf.int32)
+
 def piece_rnn(cond, cond_value, seq, seq_len, emb, **kwargs):
   # get length of each piece and number of pieces of each sample
   bs = tf.shape(cond)[0]
@@ -83,11 +102,15 @@ def piece_rnn(cond, cond_value, seq, seq_len, emb, **kwargs):
   # word weighting
   piece = piece * tf.expand_dims(piece_word_weight, axis=2)
   # print debug
-  piece_len = tf.Print(piece_len, [piece_len], message='piece len:', summarize=50)
-  piece_len = tf.Print(piece_len, [tf.reduce_max(piece_len)], message='piece len max:', summarize=1)
-  piece_len = tf.Print(piece_len, [tf.reduce_mean(tf.cast(piece_len, dtype=tf.float32))], message='piece len ave:', summarize=1)
-  piece_len = tf.Print(piece_len, [piece_len_dim], message='piece len num:', summarize=1)
-  piece_num = tf.Print(piece_num, [piece_num], message='piece_num:', summarize=50)
+  piece_len = tf.Print(piece_len, [piece_len], 
+    message='piece len:', summarize=50)
+  piece_len = tf.Print(piece_len, [tf.reduce_max(piece_len)], 
+    message='piece len max:', summarize=1)
+  piece_len = tf.Print(piece_len, [tf.reduce_mean(tf.cast(piece_len, dtype=tf.float32))], 
+    message='piece len ave:', summarize=1)
+  piece_len = tf.Print(piece_len, [piece_len_dim], 
+    message='all piece num:', summarize=1)
+  #piece_num = tf.Print(piece_num, [piece_num], message='piece_num:', summarize=50)
   # represent each piece
   print('rnn size: {}'.format(kwargs['rnn_size']))
   # traditional RNN
@@ -155,15 +178,38 @@ def cnn_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vector, 
     query_decision = query_decision_value > thres
     # print debug
     doc_decision = tf.Print(doc_decision, 
-      [tf.reduce_mean(tf.reduce_sum(tf.cast(doc_decision, tf.int32), axis=1))], message='avg all doc piece:')
+      [tf.reduce_mean(tf.reduce_sum(tf.cast(doc_decision, tf.int32), axis=1))], 
+      message='avg all doc piece:')
     query_decision = tf.Print(query_decision, 
-      [tf.reduce_mean(tf.reduce_sum(tf.cast(query_decision, tf.int32), axis=1))], message='avg all query piece:')
+      [tf.reduce_mean(tf.reduce_sum(tf.cast(query_decision, tf.int32), axis=1))], 
+      message='avg all query piece:')
+  '''
+  with vs.variable_scope('ThresholdRegionFinder'):
+    # randomly mask some part to avoid very long sequence
+    ber = tf.contrib.distributions.Bernoulli(probs=0.99)
+    ber = ber.sample([1, tf.shape(match_matrix)[1], 1])
+    match_matrix *= tf.cast(ber, dtype=match_matrix.dtype)
+    decision = tf.logical_or(match_matrix>0.4, match_matrix<-0.0)
+    doc_decision = tf.reduce_any(decision, axis=2)
+    doc_decision_value = tf.ones_like(doc_decision, dtype=tf.float32)
+    #query_decision = tf.reduce_any(decision, axis=1)
+    query_decision = tf.reduce_any(tf.logical_not(tf.equal(match_matrix, 0.0)), axis=1) # special for query
+    query_decision_value = tf.ones_like(query_decision, dtype=tf.float32)
+    doc_decision = tf.Print(doc_decision, 
+      [tf.reduce_mean(tf.reduce_sum(tf.cast(doc_decision, tf.float32), axis=1))], 
+      message='avg all doc piece:')
+    query_decision = tf.Print(query_decision, 
+      [tf.reduce_mean(tf.reduce_sum(tf.cast(query_decision, tf.float32), axis=1))], 
+      message='avg all query piece:')
+  '''
   with vs.variable_scope('RNNRegionRepresenter'):
     doc_piece_emb, doc_piece_num = piece_rnn(
       doc_decision, doc_decision_value, doc, dq_size[0], word_vector, **kwargs)
+    #doc_piece_emb, doc_piece_num = whole_rnn(doc, dq_size[0], word_vector, **kwargs)
     vs.get_variable_scope().reuse_variables()
     query_piece_emb, query_piece_num = piece_rnn(
       query_decision, query_decision_value, query, dq_size[1], word_vector, **kwargs)
+    #query_piece_emb, query_piece_num = whole_rnn(query, dq_size[1], word_vector, **kwargs)
   with vs.variable_scope('KNRMAggregator'):
     # interaction
     match_matrix = tf.matmul(doc_piece_emb, tf.transpose(query_piece_emb, [0, 2, 1]))

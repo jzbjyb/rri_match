@@ -424,7 +424,10 @@ class RRI(object):
             dataset = dataset.take(take_num)
           # Shuffle
           if is_train:
-            dataset = dataset.shuffle(buffer_size=100000)
+            buffer_size = 100000
+            if self.small_dataset_num > 0:
+               buffer_size = min(buffer_size, self.small_dataset_num)
+            dataset = dataset.shuffle(buffer_size=buffer_size)
           else:
             dataset = dataset
           # Repeat
