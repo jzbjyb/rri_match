@@ -3,7 +3,7 @@ import tensorflow as tf
 import numpy as np
 from tensorflow.python.ops import variable_scope as vs
 from cnn import cnn, DynamicMaxPooling, mlp
-from represent import cnn_rnn
+from represent import cnn_rnn, cnn_text_rnn
 jumper = tf.load_op_library('./jumper.so')
 DELTA = 1e-5 # used to avoid dividing zero
 
@@ -169,6 +169,9 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
   elif represent == 'cnn_rnn_hard':
     state_ta, representation = cnn_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, 
       word_vector, threshold=0.0, **kwargs)
+  elif represent == 'cnn_text_rnn_hard':
+    state_ta, representation = cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, 
+      word_vector, threshold=0.3, query_as_unigram=True, **kwargs)
   elif represent == 'sum_match_matrix_kernel_hard':
     '''
     K-NRM-like kernels

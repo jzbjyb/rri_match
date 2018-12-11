@@ -815,7 +815,7 @@ class RRI(object):
                 #print(min_density[b])
                 #cnn_vis.plot_saliency_map(match_matrix, saliency)
                 # visualize states
-                #print(states[1, b])
+                print(states[1, b])
         if self.verbose >= 1:  # output epoch stat
           print('{:<10}\t{:>7}:{:>6.3f}\tstop:{:>5.3f}\toffset:{:>5.1f}\tstep:{:>3.1f}'
               .format('EPO[{}_{:>3.1f}_{:>3.1f}]'.format(epoch, (time.time() - start) / 60, feed_time_all/60),
@@ -1097,7 +1097,7 @@ def train_test():
     'input_mu': None, 
     'separate': False, 
     'aggregate': 'max', 
-    'rnn_size': 128, 
+    'rnn_size': 300, 
     'max_jump_offset': max_d_len, 
     'max_jump_offset2': max_q_len, 
     'rel_level': rel_level, 
