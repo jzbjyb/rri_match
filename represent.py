@@ -3,6 +3,17 @@ from tensorflow.python.ops import variable_scope as vs
 from tensorflow.contrib.cudnn_rnn.python.ops.cudnn_rnn_ops import CudnnRNNTanh
 import numpy as np
 from cnn import cnn, mlp
+dynamic_split = tf.load_op_library('./dynamic_split.so')
+
+def dynamic_split_multi_cpu(*args, **kwargs):
+  output = dynamic_split.dynamic_split_multi_cpu(*args, **kwargs)
+  output = tf.stop_gradient(output)
+  return output
+
+def dynamic_split_continuous_multi_cpu(*args, **kwargs):
+  output = dynamic_split.dynamic_split_continuous_multi_cpu(*args, **kwargs)
+  output = tf.stop_gradient(output)
+  return output
 
 def get_padding(x, axis, pad):
   rank = len(x.get_shape())
@@ -89,11 +100,6 @@ def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, rnn_size=128, activatio
   # make the length of sp dividable by map_size
   sp = tf.pad(sp, [[0, tf.mod(map_size-tf.mod(piece_num, map_size), map_size)]],
     'CONSTANT', constant_values=1)
-  # calculate sp_start
-  ind = tf.range(tf.shape(sp)[0])
-  sp_start = tf.reduce_sum(tf.expand_dims(sp, 0) * \
-    tf.cast(tf.expand_dims(ind, 1)>tf.expand_dims(ind, 0), dtype=tf.int32), axis=1)
-  sp_start = tf.reshape(sp_start, [-1, map_size])
   sp = tf.reshape(sp, [-1, map_size])
   # initialize RNN
   input_size = emb.get_shape()[1].value
@@ -105,12 +111,11 @@ def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, rnn_size=128, activatio
       input_mode='linear_input', direction='unidirectional')
   rnn_param = tf.get_variable('rnn_params', shape=[rnn_size+input_size+2, rnn_size])
   initial_state = tf.zeros((1, map_size, rnn_size), dtype=tf.float32)
-  def fn(elems):
-    start, offset = elems
+  def fn(offset):
     # SHAPE: (map_size, padded_length)
-    piece = dynamic_split_and_pad_map_fn_(x, start, offset)
+    piece = dynamic_split_continuous_multi_cpu(x, offset)
     # SHAPE: (map_size, padded_length)
-    piece_weight = dynamic_split_and_pad_map_fn_(x_weight, start, offset)
+    piece_weight = dynamic_split_continuous_multi_cpu(x_weight, offset)
     # time major
     piece = tf.transpose(piece, [1, 0])
     piece_weight = tf.transpose(piece_weight, [1, 0])
@@ -126,7 +131,7 @@ def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, rnn_size=128, activatio
     state = tf.reshape(tf.boolean_mask(outputs, tf.equal(ind, offset-1)), [-1, rnn_size])
     return state
   # SHAPE: (None, map_size, rnn_size)
-  stacked_state = tf.map_fn(fn, [sp_start, sp], dtype=tf.float32, 
+  stacked_state = tf.map_fn(fn, sp, dtype=tf.float32, 
     parallel_iterations=1000, name='bucket_rnn_map')
   # remove padded part
   # SHAPE: (None, rnn_size)
@@ -155,7 +160,7 @@ def piece_rnn_with_bucket(cond, cond_value, seq, seq_len, emb,
   state = bucket_rnn_map_fn(piece, piece_word_weight, piece_len, emb, map_size=256, 
     rnn_size=kwargs['rnn_size'], activation=activation)
   # split state based on piece_num
-  state = dynamic_split_and_pad_map_fn(state, piece_num)
+  state = dynamic_split_continuous_multi_cpu(state, piece_num)
   return state, piece_num
 
 def piece_rnn(cond, cond_value, seq, seq_len, emb, activation='relu', label='', **kwargs):
@@ -422,7 +427,7 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
     number_of_bin = len(input_mu)-1
     input_sigma =  [0.1] * number_of_bin + [0.1]
     state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, 
-        lambda: state_ta.write(0, tf.zeros([bs, number_of_bin+1], dtype=tf.float32)))
+      lambda: state_ta.write(0, tf.zeros([bs, number_of_bin+1], dtype=tf.float32)))
     print('mu: {}, sigma: {}'.format(input_mu, input_sigma))
     mu = tf.constant(input_mu, dtype=tf.float32)
     sigma = tf.constant(input_sigma, dtype=tf.float32)
@@ -430,9 +435,6 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
     sigma = tf.reshape(sigma, [1, 1, 1, number_of_bin+1])
     # kernelize
     match_matrix = tf.expand_dims(match_matrix, axis=-1)
-    # totally discard some part of the matrix
-    #print('discard some part of the matrix in K-NRM')
-    #discard_match_matrix = tf.logical_and(match_matrix>=-0.1, match_matrix<=0.5)
     match_matrix = tf.exp(-tf.square(match_matrix-mu)/(tf.square(sigma)*2))
     # have to use mask because the weight is masked
     query_mask = tf.expand_dims(tf.range(max_q_len), dim=0) < tf.reshape(dq_size[1:], [bs, 1])
@@ -440,8 +442,6 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
     query_mask = tf.cast(tf.reshape(query_mask, [bs, 1, max_q_len, 1]), dtype=tf.float32)
     doc_mask = tf.cast(tf.reshape(doc_mask, [bs, max_d_len, 1, 1]), dtype=tf.float32)
     match_matrix = match_matrix * query_mask * doc_mask
-    # totally discard some part of the matrix
-    #match_matrix *= 1-tf.cast(discard_match_matrix, dtype=tf.float32)
     # sum and log
     representation = tf.reduce_sum(match_matrix, axis=[1, 2])
     # this is for manually masking out some kernels
