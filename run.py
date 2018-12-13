@@ -427,6 +427,7 @@ class RRI(object):
             buffer_size = 100000
             if self.small_dataset_num > 0:
                buffer_size = min(buffer_size, self.small_dataset_num)
+            print('shuffle training data with buffer {}'.format(buffer_size))
             dataset = dataset.shuffle(buffer_size=buffer_size)
           else:
             dataset = dataset

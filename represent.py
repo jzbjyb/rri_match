@@ -111,6 +111,8 @@ def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, rnn_size=128, activatio
       input_mode='linear_input', direction='unidirectional')
   rnn_param = tf.get_variable('rnn_params', shape=[rnn_size+input_size+2, rnn_size])
   initial_state = tf.zeros((1, map_size, rnn_size), dtype=tf.float32)
+  #rnn_cell = tf.nn.rnn_cell.BasicRNNCell(rnn_size, activation=tf.nn.tanh)
+  #initial_state = rnn_cell.zero_state(map_size, dtype=tf.float32)
   def fn(offset):
     # SHAPE: (map_size, padded_length)
     piece = dynamic_split_continuous_multi_cpu(x, offset)
@@ -124,6 +126,9 @@ def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, rnn_size=128, activatio
     piece = piece * tf.expand_dims(piece_weight, axis=2)
     # run RNN
     outputs, state = rnn(piece, initial_state, rnn_param)
+    #print('use traditional rnn')
+    #outputs, state = tf.nn.dynamic_rnn(rnn_cell, piece, initial_state=initial_state, 
+    #  sequence_length=offset, dtype=tf.float32, time_major=True, swap_memory=False)
     # get last hidden state
     # SHAPE: (1, map_size)
     offset = tf.expand_dims(offset, axis=0)
@@ -153,6 +158,17 @@ def piece_rnn_with_bucket(cond, cond_value, seq, seq_len, emb,
   piece_len = ind_end - ind_start + 1
   piece_len_dim = tf.shape(piece_len)[0]
   piece_num = tf.reduce_sum(tf.cast(cond_start, dtype=tf.int32), axis=1)
+  # print debug
+  piece_len = tf.Print(piece_len, [piece_len], 
+    message=label+'piece len:', summarize=50)
+  piece_len = tf.Print(piece_len, [tf.reduce_max(piece_len)], 
+    message=label+'piece len max:', summarize=1)
+  piece_len = tf.Print(piece_len, [tf.reduce_mean(tf.cast(piece_len, dtype=tf.float32))], 
+    message=label+'piece len ave:', summarize=1)
+  piece_len = tf.Print(piece_len, [piece_len_dim], 
+    message=label+'all piece num:', summarize=1)
+  piece_num = tf.Print(piece_num, [piece_num], 
+    message=label+'piece_num:', summarize=50)
   # select piece
   piece = tf.boolean_mask(seq, cond)
   # word weight
@@ -368,6 +384,7 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
   print('threshold: {}'.format(thres))
   # use CNN applied on text to choose regions
   with vs.variable_scope('CNNTextRegionFinder'):
+    '''
     with vs.variable_scope('DocCNN'):
       # SHAPE: (batch_size, max_d_len, emb_size)
       doc_after_cnn =  cnn(doc_emb, architecture=[[5, emb_size, emb_size], [1]], 
@@ -378,6 +395,8 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
         activation='tanh')
     # SHAPE: (batch_size, max_d_len, max_q_len)
     match_matrix_for_decision = tf.matmul(doc_after_cnn, tf.transpose(query_after_cnn, [0, 2, 1]))
+    '''
+    match_matrix_for_decision = match_matrix
     # both positive and negative matching are important
     match_matrix_for_decision = tf.abs(match_matrix_for_decision)
     # mask out the words beyond the boundary
@@ -397,18 +416,21 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
       [tf.reduce_mean(tf.reduce_sum(tf.cast(query_decision, tf.float32), axis=1))], 
       message='avg all query piece:')
   with vs.variable_scope('RNNRegionRepresenter'):
+    print('rnn size: {}'.format(rnn_size))
     doc_piece_emb, doc_piece_num = piece_rnn_with_bucket(
       doc_decision, doc_decision_value, doc, dq_size[0], word_vector, 
       activation='tanh', label='doc ', **kwargs)
+    doc_piece_emb *= 5.0
     if not query_as_unigram:
       vs.get_variable_scope().reuse_variables()
       query_piece_emb, query_piece_num = piece_rnn_with_bucket(
         query_decision, query_decision_value, query, dq_size[1], word_vector, 
         activation='tanh', label='query ', **kwargs)
     else:
-      query_piece_emb = mlp(tf.reshape(query_emb, [-1, emb_size]), 
-        architecture=[rnn_size], activation='tanh')
-      query_piece_emb = tf.reshape(query_piece_emb, [bs, max_q_len, rnn_size])
+      #query_piece_emb = mlp(tf.reshape(query_emb, [-1, emb_size]), 
+      #  architecture=[rnn_size], activation='tanh')
+      #query_piece_emb = tf.reshape(query_piece_emb, [bs, max_q_len, rnn_size])
+      query_piece_emb = query_emb
       query_piece_num = dq_size[1]
   with vs.variable_scope('KNRMAggregator'):
     # interaction
@@ -442,6 +464,8 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
     query_mask = tf.cast(tf.reshape(query_mask, [bs, 1, max_q_len, 1]), dtype=tf.float32)
     doc_mask = tf.cast(tf.reshape(doc_mask, [bs, max_d_len, 1, 1]), dtype=tf.float32)
     match_matrix = match_matrix * query_mask * doc_mask
+    #match_matrix *= tf.expand_dims(tf.cast(
+    #  match_matrix_for_decision > thres, dtype=match_matrix.dtype), axis=-1)
     # sum and log
     representation = tf.reduce_sum(match_matrix, axis=[1, 2])
     # this is for manually masking out some kernels
