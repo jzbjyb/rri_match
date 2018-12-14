@@ -566,6 +566,7 @@ class RRI(object):
     self.init_all_vars_local = tf.local_variables_initializer()
     self.saver = tf.train.Saver()
     if self.summary_path != None:
+      self.summaries = tf.summary.merge_all()
       self.train_writer = tf.summary.FileWriter(os.path.join(self.summary_path, 'train'), self.graph_)
     if self.match_matrix_focus_debug:
       self.saliency = tf.gradients(-self.loss, [self.rri_info['match_matrix']])[0]
@@ -666,7 +667,7 @@ class RRI(object):
         return self.batcher(X, y, self.batch_size, use_permutation=True, batch_num=self.batch_num)
       else:
         return tfrecord_batcher(batch_num=self.batch_num)
-    trace_op, trace_graph = True, False
+    trace_op, trace_graph = False, False
     # check params
     self.check_params()
     # init graph and session
@@ -713,16 +714,18 @@ class RRI(object):
                self.loss, self.scores, self.rri_info['complete_ratio'], self.rri_info['is_stop'], self.rri_info['stop_ratio'], 
                self.rri_info['total_offset'], self.rri_info['signal'], self.rri_info['states'], self.rri_info['min_density'], 
                self.saliency, self.match_matrix_focus, self.match_matrix_focus_bins, self.trainer, 
-               self.qid, self.docid, self.qd_size, self.relevance]
+               self.qid, self.docid, self.qd_size, self.relevance, self.doc, self.query]
           start_time = time.time()
           try:
-            if self.summary_path != None and i % 1 == 0: # run statistics
+            if self.summary_path != None and i % 5 == 0: # run statistics
+              fetch += [self.summaries]
               step, location, match_matrix, loss, scores, com_r, is_stop, stop_r, total_offset, signal, states, \
               min_density, saliency, match_matrix_focus, match_matrix_focus_bins, _, fd['qid'], fd['docid'], \
-              fd['qd_size'], fd['relevance'] = \
+              fd['qd_size'], fd['relevance'], fd['doc'], fd['query'], summaries = \
                 self.session_.run(fetch, feed_dict=feed_dict, options=run_options, run_metadata=run_metadata)
-              self.train_writer.add_run_metadata(run_metadata, 'step%d' % i)
               print('adding run metadata for {}'.format(i))
+              self.train_writer.add_run_metadata(run_metadata, 'step%d' % (epoch*10000+i))
+              self.train_writer.add_summary(summaries, global_step=epoch*10000+i)
               if trace_op:
                 profiler_opts = builder(builder.time_and_memory()).order_by('micros').build()
                 tf.profiler.profile(self.graph_, run_meta=run_metadata, cmd='scope', options=profiler_opts)
@@ -740,7 +743,7 @@ class RRI(object):
             else:
               step, location, match_matrix, loss, scores, com_r, is_stop, stop_r, total_offset, signal, states, \
               min_density, saliency, match_matrix_focus, match_matrix_focus_bins, _, fd['qid'], fd['docid'], \
-              fd['qd_size'], fd['relevance'] = \
+              fd['qd_size'], fd['relevance'], fd['doc'], fd['query'] = \
                 self.session_.run(fetch, feed_dict=feed_dict)
             if mmf_fout != None:
               for j, mmf in enumerate(match_matrix_focus):
@@ -804,6 +807,8 @@ class RRI(object):
                 # visualize jump location
                 print(location[b, :step[b]+1])
                 # visualize match_matrix
+                #print(match_matrix[b][:fd['qd_size'][b, 1],:fd['qd_size'][b, 0]])
+                #print(fd['doc'][b])
                 print(np.max(match_matrix[b][:fd['qd_size'][b, 1], :fd['qd_size'][b, 0]], axis=1))
                 print(np.max(match_matrix[b][:fd['qd_size'][b, 1], :fd['qd_size'][b, 0]], axis=0))
                 #print(np.max(match_matrix[b], axis=1))
