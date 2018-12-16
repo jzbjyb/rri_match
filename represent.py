@@ -2,6 +2,7 @@ import tensorflow as tf
 from tensorflow.python.ops import variable_scope as vs
 from tensorflow.contrib.cudnn_rnn.python.ops.cudnn_rnn_ops import CudnnRNNTanh
 import numpy as np
+from basic_op import map_fn_concat
 from cnn import cnn, mlp
 dynamic_split = tf.load_op_library('./dynamic_split.so')
 
@@ -92,12 +93,13 @@ def whole_rnn(seq, seq_len, emb, **kwargs):
   state = tf.expand_dims(state, axis=1)
   return state, tf.ones([bs], dtype=tf.int32)
 
-def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, rnn_size=128, activation='relu'):
+def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, rnn_size=128, activation='relu', all_position=False):
   '''
   Collect map_size pieces in a bucket to run RNN.
   '''
   piece_num = tf.shape(sp)[0]
   # make the length of sp dividable by map_size
+  # use 1 as padded value because the output of fn used in map_fn should be consistent.
   sp = tf.pad(sp, [[0, tf.mod(map_size-tf.mod(piece_num, map_size), map_size)]],
     'CONSTANT', constant_values=1)
   sp_start = tf.cumsum(sp, exclusive=True)
@@ -105,12 +107,17 @@ def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, rnn_size=128, activatio
   sp_start = tf.reshape(sp_start, [-1, map_size])
   # initialize RNN
   input_size = emb.get_shape()[1].value
+  if all_position:
+    direction = 'unidirectional'
+  else:
+    direction = 'unidirectional'
+  print('rnn direction: {}'.format(direction))
   if activation == 'relu':
     rnn = tf.contrib.cudnn_rnn.CudnnRNNRelu(num_layers=1, num_units=rnn_size, 
-      input_size=input_size, input_mode='linear_input', direction='unidirectional')
+      input_size=input_size, input_mode='linear_input', direction=direction)
   elif activation == 'tanh':
     rnn = CudnnRNNTanh(num_layers=1, num_units=rnn_size, input_size=input_size, 
-      input_mode='skip_input', direction='unidirectional')
+      input_mode='skip_input', direction=direction)
   rnn_param = tf.get_variable('rnn_params', shape=[rnn_size+input_size+2, rnn_size])
   initial_state = tf.zeros((1, map_size, rnn_size), dtype=tf.float32)
   #rnn_cell = tf.nn.rnn_cell.BasicRNNCell(rnn_size, activation=tf.nn.tanh)
@@ -147,7 +154,12 @@ def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, rnn_size=128, activatio
     offset = tf.expand_dims(offset, axis=1)
     # SHAPE: (1, padded_length)
     ind = tf.expand_dims(tf.range(tf.shape(outputs)[1]), axis=0)
-    state_select = tf.equal(ind, offset-1)
+    if all_position:
+      # use all the hidden states in each piece
+      state_select = tf.less(ind, offset)
+    else:
+      # use the last hidden states in each piece
+      state_select = tf.equal(ind, offset-1)
     state_select = tf.Print(state_select, [tf.shape(state_select)], 
       message='state_select shape', summarize=500, first_n=1)
     # print debug
@@ -162,16 +174,26 @@ def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, rnn_size=128, activatio
     # state weighting
     #state *= tf.expand_dims(piece_weight_ave, axis=1)
     return state_selected
-  # SHAPE: (None, map_size, rnn_size)
-  stacked_state = tf.map_fn(fn, [sp_start, sp], dtype=tf.float32, 
-    parallel_iterations=1000, name='bucket_rnn_map')
+  if all_position:
+    # SHAPE: (None, rnn_size)
+    all_state = map_fn_concat(fn, [sp_start, sp], dtype=tf.float32,
+      parallel_iterations=1000, name='bucket_rnn_map_concat')
+  else:
+    # SHAPE: (None, map_size, rnn_size)
+    all_state = tf.map_fn(fn, [sp_start, sp], dtype=tf.float32,
+      parallel_iterations=1000, name='bucket_rnn_map_stack')
+    # SHAPE: (None, rnn_size)
+    all_state = tf.reshape(all_state, [-1, rnn_size])
   # remove padded part
-  # SHAPE: (None, rnn_size)
-  stacked_state = tf.reshape(stacked_state, [-1, rnn_size])[:piece_num]
-  return stacked_state
+  all_state = all_state[:piece_num]
+  return all_state
 
 def piece_rnn_with_bucket(cond, cond_value, seq, seq_len, emb, 
-  activation='relu', label='', **kwargs):
+  activation='relu', all_position=False, label='', **kwargs):
+  '''
+  If all_position=False, we only use the last hidden state of each piece.
+  If all_position=True, we use all the hidden states for each piece.
+  '''
   # get length of each piece and number of pieces of each sample
   bs = tf.shape(cond)[0]
   max_seq_len = tf.shape(seq)[1]
@@ -183,9 +205,12 @@ def piece_rnn_with_bucket(cond, cond_value, seq, seq_len, emb,
   ind_start = tf.boolean_mask(ind, cond_start)
   ind_end = tf.boolean_mask(ind, cond_end)
   piece_len = ind_end - ind_start + 1
-  tf.summary.histogram("piece_len", piece_len)
+  tf.summary.histogram('piece_len', piece_len)
   piece_len_dim = tf.shape(piece_len)[0]
-  piece_num = tf.reduce_sum(tf.cast(cond_start, dtype=tf.int32), axis=1)
+  if all_position:
+    piece_num = tf.reduce_sum(tf.cast(cond, dtype=tf.int32), axis=1)
+  else:
+    piece_num = tf.reduce_sum(tf.cast(cond_start, dtype=tf.int32), axis=1)
   # print debug
   piece_len = tf.Print(piece_len, [piece_len], 
     message=label+'piece len:', summarize=200)
@@ -202,7 +227,7 @@ def piece_rnn_with_bucket(cond, cond_value, seq, seq_len, emb,
   # word weight
   piece_word_weight = tf.boolean_mask(cond_value, cond)
   state = bucket_rnn_map_fn(piece, piece_word_weight, piece_len, emb, map_size=256, 
-    rnn_size=kwargs['rnn_size'], activation=activation)
+    rnn_size=kwargs['rnn_size'], activation=activation, all_position=all_position)
   piece_num = tf.Print(piece_num, [tf.shape(piece_num)], 
     message=label+'piece_num shape:')
   state = tf.Print(state, [tf.shape(state)], 
@@ -458,14 +483,14 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
     print('rnn size: {}'.format(rnn_size))
     doc_piece_emb, doc_piece_num = piece_rnn_with_bucket(
       doc_decision, doc_decision_value, doc, dq_size[0], word_vector, 
-      activation='tanh', label='doc ', **kwargs)
+      activation='tanh',all_position=True, label='doc ', **kwargs)
     #print('use rnn state exaggeration')
     #doc_piece_emb *= 5.0
     if not query_as_unigram:
       vs.get_variable_scope().reuse_variables()
       query_piece_emb, query_piece_num = piece_rnn_with_bucket(
         query_decision, query_decision_value, query, dq_size[1], word_vector, 
-        activation='tanh', label='query ', **kwargs)
+        activation='tanh', all_position=True, label='query ', **kwargs)
     else:
       #query_piece_emb = mlp(tf.reshape(query_emb, [-1, emb_size]), 
       #  architecture=[rnn_size], activation='tanh')
