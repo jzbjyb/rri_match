@@ -171,7 +171,7 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
       word_vector, threshold=0.0, **kwargs)
   elif represent == 'cnn_text_rnn_hard':
     state_ta, representation = cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, 
-      word_vector, threshold=0.4, query_as_unigram=True, **kwargs)
+      word_vector, threshold=0.4, all_position=True, query_as_unigram=True, **kwargs)
   elif represent == 'sum_match_matrix_kernel_hard':
     '''
     K-NRM-like kernels

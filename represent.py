@@ -1,4 +1,5 @@
 import tensorflow as tf
+from tensorflow.python.framework import ops
 from tensorflow.python.ops import variable_scope as vs
 from tensorflow.contrib.cudnn_rnn.python.ops.cudnn_rnn_ops import CudnnRNNTanh
 import numpy as np
@@ -6,15 +7,28 @@ from basic_op import map_fn_concat
 from cnn import cnn, mlp
 dynamic_split = tf.load_op_library('./dynamic_split.so')
 
-def dynamic_split_multi_cpu(*args, **kwargs):
+def dynamic_split_multi_cpu(*args, stop_grad=True, **kwargs):
   output = dynamic_split.dynamic_split_multi_cpu(*args, **kwargs)
-  output = tf.stop_gradient(output)
+  if stop_grad:
+    output = tf.stop_gradient(output)
   return output
 
-def dynamic_split_continuous_multi_cpu(*args, **kwargs):
+def dynamic_split_continuous_multi_cpu(*args, stop_grad=True, **kwargs):
   output = dynamic_split.dynamic_split_continuous_multi_cpu(*args, **kwargs)
-  output = tf.stop_gradient(output)
+  if stop_grad:
+    output = tf.stop_gradient(output)
   return output
+
+@ops.RegisterGradient('DynamicSplitContinuousMultiCpu')
+def _dynamic_split_continuous_multi_cpu_grad(op, grad):
+  x = op.inputs[0]
+  offset = op.inputs[1]
+  max_len = tf.shape(grad)[1]
+  # SHAPE: (batch_size, max_len)
+  grad_select = tf.expand_dims(tf.range(max_len), axis=0) < tf.expand_dims(offset, axis=1)
+  x_grad = tf.boolean_mask(grad, grad_select)
+  x_grad = x_grad[:tf.shape(x)[0]]
+  return [x_grad, None]
 
 def get_padding(x, axis, pad):
   rank = len(x.get_shape())
@@ -88,7 +102,6 @@ def whole_rnn(seq, seq_len, emb, **kwargs):
   seq_len = tf.expand_dims(seq_len, axis=0)
   ind = tf.expand_dims(tf.range(tf.shape(outputs)[0]), axis=1)
   state = tf.reshape(tf.boolean_mask(outputs, tf.equal(ind, seq_len-1)), [-1, rnn_size])
-  #state = tf.Print(state, [state[:10, :5]], message='state:', summarize=50)
   # split state based on piece_num
   state = tf.expand_dims(state, axis=1)
   return state, tf.ones([bs], dtype=tf.int32)
@@ -97,6 +110,7 @@ def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, rnn_size=128, activatio
   '''
   Collect map_size pieces in a bucket to run RNN.
   '''
+  all_piece_len = tf.reduce_sum(sp)
   piece_num = tf.shape(sp)[0]
   # make the length of sp dividable by map_size
   # use 1 as padded value because the output of fn used in map_fn should be consistent.
@@ -118,7 +132,9 @@ def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, rnn_size=128, activatio
   elif activation == 'tanh':
     rnn = CudnnRNNTanh(num_layers=1, num_units=rnn_size, input_size=input_size, 
       input_mode='skip_input', direction=direction)
-  rnn_param = tf.get_variable('rnn_params', shape=[rnn_size+input_size+2, rnn_size])
+  rnn_param = tf.get_variable('rnn_params', shape=[rnn_size+input_size+2, rnn_size],
+    initializer=tf.constant_initializer())
+  rnn_param = tf.stop_gradient(rnn_param)
   initial_state = tf.zeros((1, map_size, rnn_size), dtype=tf.float32)
   #rnn_cell = tf.nn.rnn_cell.BasicRNNCell(rnn_size, activation=tf.nn.tanh)
   #initial_state = rnn_cell.zero_state(map_size, dtype=tf.float32)
@@ -137,15 +153,19 @@ def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, rnn_size=128, activatio
     # time major
     piece = tf.transpose(piece, [1, 0])
     piece_weight = tf.transpose(piece_weight, [1, 0])
+    # SHAPE: (padded_length, map_size, emb_size)
     piece = tf.nn.embedding_lookup(emb, piece)
     # word weighting
     #piece = piece * tf.expand_dims(piece_weight, axis=2)
     # run RNN
+    # SHAPE: (padded_length, map_size, rnn_size), (map_size, rnn_size)
     outputs, state = rnn(piece, initial_state, rnn_param)
+    outputs = tf.atanh(outputs)
     #print('use traditional rnn')
     #outputs, state = tf.nn.dynamic_rnn(rnn_cell, piece, initial_state=initial_state, 
     #  sequence_length=offset, dtype=tf.float32, time_major=True, swap_memory=False)
     # transpose outputs, otherwise, we can not select
+    #with tf.control_dependencies([tf.assert_less(tf.abs(piece-outputs), 1e-7)]):
     # SHAPE: (map_size, padded_length, rnn_size)
     outputs = tf.transpose(outputs, [1, 0, 2])
     outputs = tf.Print(outputs, [tf.shape(outputs)], 
@@ -167,7 +187,7 @@ def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, rnn_size=128, activatio
       message='outputs', summarize=500, first_n=1)
     state_select = tf.Print(state_select, [state_select[:10, :]], 
       message='state_select', summarize=500, first_n=1)
-    # get last hidden state
+    # get last or all hidden states
     state_selected = tf.reshape(tf.boolean_mask(outputs, state_select), [-1, rnn_size]) 
     state_selected = tf.Print(state_selected, [state_selected[:10, :2]], 
       message='state_selected', summarize=500, first_n=1)
@@ -178,14 +198,16 @@ def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, rnn_size=128, activatio
     # SHAPE: (None, rnn_size)
     all_state = map_fn_concat(fn, [sp_start, sp], dtype=tf.float32,
       parallel_iterations=1000, name='bucket_rnn_map_concat')
+    # remove padded part
+    all_state = all_state[:all_piece_len]
   else:
     # SHAPE: (None, map_size, rnn_size)
     all_state = tf.map_fn(fn, [sp_start, sp], dtype=tf.float32,
       parallel_iterations=1000, name='bucket_rnn_map_stack')
     # SHAPE: (None, rnn_size)
     all_state = tf.reshape(all_state, [-1, rnn_size])
-  # remove padded part
-  all_state = all_state[:piece_num]
+    # remove padded part
+    all_state = all_state[:piece_num]
   return all_state
 
 def piece_rnn_with_bucket(cond, cond_value, seq, seq_len, emb, 
@@ -235,8 +257,9 @@ def piece_rnn_with_bucket(cond, cond_value, seq, seq_len, emb,
   state = tf.Print(state, [state[:30, :2]], 
     message=label+'state!:', summarize=100)
   # split state based on piece_num
+  #with tf.control_dependencies([tf.assert_less(tf.abs(tf.nn.embedding_lookup(emb, piece)-state), 1e-7)]):
   # SHAPE: (batch_size, padded_len, rnn_size)
-  state = dynamic_split_continuous_multi_cpu(state, piece_num)
+  state = dynamic_split_continuous_multi_cpu(state, piece_num, stop_grad=False)
   state = tf.Print(state, [tf.shape(state)], 
     message=label+'new state shape:')
   state = tf.Print(state, [state[:10, :15, :2]], 
@@ -441,6 +464,7 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
   max_q_len = tf.shape(query)[1]
   max_d_len = tf.shape(doc)[1]
   thres = kwargs['threshold']
+  all_position = kwargs['all_position']
   time = kwargs['time']
   state_ta = kwargs['state_ta']
   query_as_unigram = kwargs['query_as_unigram']
@@ -483,14 +507,14 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
     print('rnn size: {}'.format(rnn_size))
     doc_piece_emb, doc_piece_num = piece_rnn_with_bucket(
       doc_decision, doc_decision_value, doc, dq_size[0], word_vector, 
-      activation='tanh',all_position=True, label='doc ', **kwargs)
+      activation='tanh', label='doc ', **kwargs)
     #print('use rnn state exaggeration')
     #doc_piece_emb *= 5.0
     if not query_as_unigram:
       vs.get_variable_scope().reuse_variables()
       query_piece_emb, query_piece_num = piece_rnn_with_bucket(
         query_decision, query_decision_value, query, dq_size[1], word_vector, 
-        activation='tanh', all_position=True, label='query ', **kwargs)
+        activation='tanh', label='query ', **kwargs)
     else:
       #query_piece_emb = mlp(tf.reshape(query_emb, [-1, emb_size]), 
       #  architecture=[rnn_size], activation='tanh')
@@ -498,10 +522,14 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
       query_piece_emb = query_emb
       query_piece_num = dq_size[1]
   with vs.variable_scope('KNRMAggregator'):
-    # interaction
+    print('use cosine normalization')
+    doc_emb_norm = tf.sqrt(tf.reduce_sum(tf.square(doc_piece_emb), axis=2, keep_dims=True))
+    doc_emb_norm += tf.cast(tf.equal(doc_emb_norm, 0), dtype=tf.float32)
+    query_emb_norm = tf.sqrt(tf.reduce_sum(tf.square(query_piece_emb), axis=2, keep_dims=True))
+    query_emb_norm += tf.cast(tf.equal(query_emb_norm, 0), dtype=tf.float32)
+    doc_piece_emb = doc_piece_emb / doc_emb_norm
+    query_piece_emb = query_piece_emb / query_emb_norm
     match_matrix = tf.matmul(doc_piece_emb, tf.transpose(query_piece_emb, [0, 2, 1]))
-    match_matrix = tf.Print(match_matrix, [match_matrix[:3, :10, :3]], 
-      message='rnn match', summarize=100)
     max_q_len = tf.shape(query_piece_emb)[1]
     max_d_len = tf.shape(doc_piece_emb)[1]
     dq_size = tf.stack([doc_piece_num, query_piece_num], axis=0)
@@ -521,6 +549,14 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
     mu = tf.reshape(mu, [1, 1, 1, number_of_bin+1])
     sigma = tf.reshape(sigma, [1, 1, 1, number_of_bin+1])
     # kernelize
+    if all_position:
+      # only use the corresponding query and document term
+      piece_num = tf.reduce_sum(tf.cast(doc_decision, dtype=tf.int32), axis=1)
+      # SHAPE: (None, max_q_len)
+      match_matrix_for_decision = tf.boolean_mask(match_matrix_for_decision, doc_decision)
+      # SHAPE: (batch_size, padded_len, max_q_len)
+      match_matrix_for_decision = dynamic_split_continuous_multi_cpu(match_matrix_for_decision, piece_num)
+      #with tf.control_dependencies([tf.assert_less(tf.abs(match_matrix_for_decision - tf.abs(match_matrix)), 1e-3)]):
     match_matrix = tf.expand_dims(match_matrix, axis=-1)
     match_matrix = tf.exp(-tf.square(match_matrix-mu)/(tf.square(sigma)*2))
     # have to use mask because the weight is masked
@@ -529,6 +565,11 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
     query_mask = tf.cast(tf.reshape(query_mask, [bs, 1, max_q_len, 1]), dtype=tf.float32)
     doc_mask = tf.cast(tf.reshape(doc_mask, [bs, max_d_len, 1, 1]), dtype=tf.float32)
     match_matrix = match_matrix * query_mask * doc_mask
+    if all_position:
+      decision_mask = tf.expand_dims(tf.cast(match_matrix_for_decision > thres,
+        dtype=match_matrix.dtype), axis=-1)
+      decision_mask = tf.stop_gradient(decision_mask)
+      match_matrix *= decision_mask
     #match_matrix *= tf.expand_dims(tf.cast(
     #  match_matrix_for_decision > thres, dtype=match_matrix.dtype), axis=-1)
     # sum and log
@@ -541,4 +582,4 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
     #mlp_arch = [number_of_bin+1, number_of_bin+1]
     #print('use MLP with structure {}'.format(mlp_arch))
     #representation = mlp(representation, architecture=mlp_arch, activation='relu')
-    return state_ta, representation
+  return state_ta, representation

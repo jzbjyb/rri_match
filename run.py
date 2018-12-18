@@ -667,7 +667,7 @@ class RRI(object):
         return self.batcher(X, y, self.batch_size, use_permutation=True, batch_num=self.batch_num)
       else:
         return tfrecord_batcher(batch_num=self.batch_num)
-    trace_op, trace_graph = False, False
+    trace_op, trace_graph = True, False
     # check params
     self.check_params()
     # init graph and session
@@ -679,7 +679,6 @@ class RRI(object):
     builder = option_builder.ProfileOptionBuilder
     #profiler = model_analyzer.Profiler(graph=self.graph_)
     run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
-    run_metadata = tf.RunMetadata()
     # train
     if self.unsupervised:
       yield
@@ -718,6 +717,7 @@ class RRI(object):
           start_time = time.time()
           try:
             if self.summary_path != None and i % 5 == 0: # run statistics
+              run_metadata = tf.RunMetadata()
               fetch += [self.summaries]
               step, location, match_matrix, loss, scores, com_r, is_stop, stop_r, total_offset, signal, states, \
               min_density, saliency, match_matrix_focus, match_matrix_focus_bins, _, fd['qid'], fd['docid'], \
@@ -764,6 +764,10 @@ class RRI(object):
           if self.verbose >= 2:
             print('{:<5}\t{:>5.3f}\tloss:{:>5.3f}\tcom ratio:{:>3.2f}\tstop ratio:{:>3.2f}'
                 .format(i, end_time - start_time, loss, com_r, stop_r))
+          #for i in self.graph_.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='RRI'):
+          #  if i.name.startswith('RRI/InputProcessing/word_vector'):
+          #    print(i, i.eval(self.session_))
+          #input('continue')
           if args.debug and hasattr(self, 'test_rnn_grad'):
             test_rnn_grad, = self.session_.run([self.test_rnn_grad], feed_dict=feed_dict)
             with printoptions(precision=3, suppress=True, threshold=np.nan):
