@@ -138,13 +138,10 @@ def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, rnn_size=128, activatio
   initial_state = tf.zeros((1, map_size, rnn_size), dtype=tf.float32)
   #rnn_cell = tf.nn.rnn_cell.BasicRNNCell(rnn_size, activation=tf.nn.tanh)
   #initial_state = rnn_cell.zero_state(map_size, dtype=tf.float32)
-  x = tf.Print(x, [x], message='x', summarize=200)
   def fn(elems):
     start, offset = elems
     # SHAPE: (map_size, padded_length)
     piece = dynamic_split_multi_cpu(x, start, offset)
-    piece = tf.Print(piece, [piece], 
-      message='word piece', summarize=500, first_n=1)
     # SHAPE: (map_size, padded_length)
     piece_weight = dynamic_split_multi_cpu(x_weight, start, offset)
     # SHAPE: (map_size)
@@ -152,7 +149,7 @@ def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, rnn_size=128, activatio
     #  tf.cast(offset, dtype=piece_weight.dtype)
     # time major
     piece = tf.transpose(piece, [1, 0])
-    piece_weight = tf.transpose(piece_weight, [1, 0])
+    #piece_weight = tf.transpose(piece_weight, [1, 0])
     # SHAPE: (padded_length, map_size, emb_size)
     piece = tf.nn.embedding_lookup(emb, piece)
     # word weighting
@@ -165,11 +162,8 @@ def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, rnn_size=128, activatio
     #outputs, state = tf.nn.dynamic_rnn(rnn_cell, piece, initial_state=initial_state, 
     #  sequence_length=offset, dtype=tf.float32, time_major=True, swap_memory=False)
     # transpose outputs, otherwise, we can not select
-    #with tf.control_dependencies([tf.assert_less(tf.abs(piece-outputs), 1e-7)]):
     # SHAPE: (map_size, padded_length, rnn_size)
     outputs = tf.transpose(outputs, [1, 0, 2])
-    outputs = tf.Print(outputs, [tf.shape(outputs)], 
-      message='outputs shape', summarize=500, first_n=1)
     # SHAPE: (map_size, 1)
     offset = tf.expand_dims(offset, axis=1)
     # SHAPE: (1, padded_length)
@@ -180,17 +174,8 @@ def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, rnn_size=128, activatio
     else:
       # use the last hidden states in each piece
       state_select = tf.equal(ind, offset-1)
-    state_select = tf.Print(state_select, [tf.shape(state_select)], 
-      message='state_select shape', summarize=500, first_n=1)
-    # print debug
-    outputs = tf.Print(outputs, [outputs[:10, :, :2]], 
-      message='outputs', summarize=500, first_n=1)
-    state_select = tf.Print(state_select, [state_select[:10, :]], 
-      message='state_select', summarize=500, first_n=1)
     # get last or all hidden states
-    state_selected = tf.reshape(tf.boolean_mask(outputs, state_select), [-1, rnn_size]) 
-    state_selected = tf.Print(state_selected, [state_selected[:10, :2]], 
-      message='state_selected', summarize=500, first_n=1)
+    state_selected = tf.reshape(tf.boolean_mask(outputs, state_select), [-1, rnn_size])
     # state weighting
     #state *= tf.expand_dims(piece_weight_ave, axis=1)
     return state_selected
@@ -246,24 +231,14 @@ def piece_rnn_with_bucket(cond, cond_value, seq, seq_len, emb,
     message=label+'piece num of current batch:', summarize=1)
   # select piece
   piece = tf.boolean_mask(seq, cond)
-  # word weight
+  # select word weight
   piece_word_weight = tf.boolean_mask(cond_value, cond)
+  # run bucket rnn
   state = bucket_rnn_map_fn(piece, piece_word_weight, piece_len, emb, map_size=256, 
     rnn_size=kwargs['rnn_size'], activation=activation, all_position=all_position)
-  piece_num = tf.Print(piece_num, [tf.shape(piece_num)], 
-    message=label+'piece_num shape:')
-  state = tf.Print(state, [tf.shape(state)], 
-    message=label+'state shape:')
-  state = tf.Print(state, [state[:30, :2]], 
-    message=label+'state!:', summarize=100)
   # split state based on piece_num
-  #with tf.control_dependencies([tf.assert_less(tf.abs(tf.nn.embedding_lookup(emb, piece)-state), 1e-7)]):
   # SHAPE: (batch_size, padded_len, rnn_size)
   state = dynamic_split_continuous_multi_cpu(state, piece_num, stop_grad=False)
-  state = tf.Print(state, [tf.shape(state)], 
-    message=label+'new state shape:')
-  state = tf.Print(state, [state[:10, :15, :2]], 
-    message=label+'new state!:', summarize=300)
   return state, piece_num
 
 def piece_rnn(cond, cond_value, seq, seq_len, emb, activation='relu', label='', **kwargs):
@@ -556,7 +531,6 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
       match_matrix_for_decision = tf.boolean_mask(match_matrix_for_decision, doc_decision)
       # SHAPE: (batch_size, padded_len, max_q_len)
       match_matrix_for_decision = dynamic_split_continuous_multi_cpu(match_matrix_for_decision, piece_num)
-      #with tf.control_dependencies([tf.assert_less(tf.abs(match_matrix_for_decision - tf.abs(match_matrix)), 1e-3)]):
     match_matrix = tf.expand_dims(match_matrix, axis=-1)
     match_matrix = tf.exp(-tf.square(match_matrix-mu)/(tf.square(sigma)*2))
     # have to use mask because the weight is masked
