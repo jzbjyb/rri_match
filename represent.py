@@ -555,16 +555,18 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
     if 'input_mu' in kwargs and kwargs['input_mu'] != None:
         input_mu = kwargs['input_mu']
     else:
-        input_mu = np.array(list(range(-10,10+1,2)))/10
+        input_mu = np.array(list(range(-20,20+1,1)))/20
     #input_mu = [1.0]
     number_of_bin = len(input_mu)-1
-    input_sigma =  [0.1] * number_of_bin + [0.1]
+    input_sigma =  [0.025] * number_of_bin + [0.025]
     if not use_combine:
       state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta,
         lambda: state_ta.write(0, tf.zeros([bs, number_of_bin+1], dtype=tf.float32)))
     else:
+      #state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta,
+      #  lambda: state_ta.write(0, tf.zeros([bs, 2 * (number_of_bin + 1)], dtype=tf.float32)))
       state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta,
-        lambda: state_ta.write(0, tf.zeros([bs, 2 * (number_of_bin + 1)], dtype=tf.float32)))
+        lambda: state_ta.write(0, tf.zeros([bs, 11 + (number_of_bin + 1)], dtype=tf.float32)))
     print('mu: {}, sigma: {}'.format(input_mu, input_sigma))
     '''
     if all_position:
