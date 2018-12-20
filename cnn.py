@@ -22,6 +22,39 @@ def mlp(x, architecture=[10], activation='relu'):
   return x
 
 
+def krnm(match_matrix, max_q_len, max_d_len, dq_size, input_mu, input_sigma, match_matrix_mask=None,
+  use_log=True, use_mlp=False):
+  bs = tf.shape(match_matrix)[0]
+  number_of_bin = len(input_mu) - 1
+  mu = tf.constant(input_mu, dtype=tf.float32)
+  sigma = tf.constant(input_sigma, dtype=tf.float32)
+  mu = tf.reshape(mu, [1, 1, 1, number_of_bin + 1])
+  sigma = tf.reshape(sigma, [1, 1, 1, number_of_bin + 1])
+  # kernelize
+  match_matrix = tf.expand_dims(match_matrix, axis=-1)
+  match_matrix = tf.exp(-tf.square(match_matrix - mu) / (tf.square(sigma) * 2))
+  # have to use mask because the weight is masked
+  query_mask = tf.expand_dims(tf.range(max_q_len), dim=0) < tf.reshape(dq_size[1:], [bs, 1])
+  doc_mask = tf.expand_dims(tf.range(max_d_len), dim=0) < tf.reshape(dq_size[:1], [bs, 1])
+  query_mask = tf.cast(tf.reshape(query_mask, [bs, 1, max_q_len, 1]), dtype=tf.float32)
+  doc_mask = tf.cast(tf.reshape(doc_mask, [bs, max_d_len, 1, 1]), dtype=tf.float32)
+  match_matrix = match_matrix * query_mask * doc_mask
+  if match_matrix_mask is not None:
+    # mask using other matrix
+    match_matrix *= tf.expand_dims(match_matrix_mask, axis=-1)
+  # sum
+  representation = tf.reduce_sum(match_matrix, axis=[1, 2])
+  if use_log:
+    # log is used in K-NRM
+    representation = tf.log(1 + representation)
+  if use_mlp:
+    # use a MLP to model interactions between evidence of different strength
+    mlp_arch = [number_of_bin+1, number_of_bin+1]
+    print('use MLP with structure {}'.format(mlp_arch))
+    representation = mlp(representation, architecture=mlp_arch, activation='relu')
+  return representation
+
+
 class DynamicMaxPooling(object):
   def __init__(self, dim=2, shape=None):
     self.conv_dim = dim

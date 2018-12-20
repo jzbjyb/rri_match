@@ -489,7 +489,7 @@ class RRI(object):
     with vs.variable_scope('InputProcessing'):
       print('word vector trainable: {}'.format(self.word_vector_trainable))
       self.word_vector_variable = tf.get_variable('word_vector', self.word_vector.shape,
-        initializer=tf.constant_initializer(self.word_vector), 
+        initializer=tf.constant_initializer(self.word_vector),
         trainable=self.word_vector_trainable)
       word_vector_variable = self.word_vector_variable
       if self.oov_word_vector != None:
@@ -667,7 +667,7 @@ class RRI(object):
         return self.batcher(X, y, self.batch_size, use_permutation=True, batch_num=self.batch_num)
       else:
         return tfrecord_batcher(batch_num=self.batch_num)
-    trace_op, trace_graph = True, False
+    trace_op, trace_graph = False, False
     # check params
     self.check_params()
     # init graph and session
@@ -716,16 +716,17 @@ class RRI(object):
                self.qid, self.docid, self.qd_size, self.relevance, self.doc, self.query]
           start_time = time.time()
           try:
-            if self.summary_path != None and i % 5 == 0: # run statistics
+            if self.summary_path != None and i % 10 == 0: # run statistics
               run_metadata = tf.RunMetadata()
               fetch += [self.summaries]
               step, location, match_matrix, loss, scores, com_r, is_stop, stop_r, total_offset, signal, states, \
               min_density, saliency, match_matrix_focus, match_matrix_focus_bins, _, fd['qid'], fd['docid'], \
               fd['qd_size'], fd['relevance'], fd['doc'], fd['query'], summaries = \
                 self.session_.run(fetch, feed_dict=feed_dict, options=run_options, run_metadata=run_metadata)
-              print('adding run metadata for {}'.format(i))
-              self.train_writer.add_run_metadata(run_metadata, 'step%d' % (epoch*10000+i))
-              self.train_writer.add_summary(summaries, global_step=epoch*10000+i)
+              global_step = (epoch - 1) * self.batch_num + i
+              #print('adding summary for {}'.format(global_step))
+              #self.train_writer.add_run_metadata(run_metadata, 'step%d' % global_step)
+              self.train_writer.add_summary(summaries, global_step=global_step)
               if trace_op:
                 profiler_opts = builder(builder.time_and_memory()).order_by('micros').build()
                 tf.profiler.profile(self.graph_, run_meta=run_metadata, cmd='scope', options=profiler_opts)
@@ -739,7 +740,6 @@ class RRI(object):
                 trace = timeline.Timeline(step_stats=run_metadata.step_stats)
                 trace_file = open('summary/profiler.json', 'w')
                 trace_file.write(trace.generate_chrome_trace_format())
-              print('profile run metadata for {}'.format(i))
             else:
               step, location, match_matrix, loss, scores, com_r, is_stop, stop_r, total_offset, signal, states, \
               min_density, saliency, match_matrix_focus, match_matrix_focus_bins, _, fd['qid'], fd['docid'], \
