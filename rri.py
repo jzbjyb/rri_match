@@ -170,9 +170,12 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
     state_ta, representation = cnn_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, 
       word_vector, threshold=0.0, **kwargs)
   elif represent == 'cnn_text_rnn_hard':
+    use_cudnn = True
+    if kwargs['direction'] == 'bidirectional':
+      use_cudnn = False
     state_ta, representation = cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, 
-      word_vector, use_combine=True, query_as_unigram=True, threshold=0.4, use_single=False, all_position=True,
-      use_cudnn=True, direction='unidirectional', activation='tanh', **kwargs)
+      word_vector, use_combine=True, query_as_unigram=True, threshold=0.4, use_single=False,
+      use_cudnn=use_cudnn, activation='tanh', **kwargs)
   elif represent == 'sum_match_matrix_kernel_hard':
     '''
     K-NRM-like kernels
@@ -484,9 +487,9 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
 
 
 def rri(query, doc, dq_size, max_jump_step, word_vector, interaction=['dot'], glimpse='fix_hard', glimpse_fix_size=None,
-    min_density=None, use_ratio=False, min_jump_offset=1, jump='max_hard', represent='sum_hard', separate=False, 
-    aggregate='max', rnn_size=None, max_jump_offset=None, max_jump_offset2=None, keep_prob=1.0,
-    query_weight=None, doc_weight=None, input_mu=None):
+    min_density=None, use_ratio=False, min_jump_offset=1, jump='max_hard', represent='sum_hard', separate=False,
+    all_position=True, direction='unidirectional', aggregate='max', rnn_size=None, max_jump_offset=None,
+    max_jump_offset2=None, keep_prob=1.0, query_weight=None, doc_weight=None, input_mu=None):
   bs = tf.shape(query)[0]
   max_q_len = tf.shape(query)[1]
   max_d_len = tf.shape(doc)[1]
@@ -649,7 +652,8 @@ def rri(query, doc, dq_size, max_jump_step, word_vector, interaction=['dot'], gl
                      max_jump_offset2=max_jump_offset2, rnn_size=rnn_size, keep_prob=keep_prob, \
                      separate=separate, location_ta=location_ta, state_ta=state_ta, doc_repr_ta=doc_repr_ta, \
                      query_repr_ta=query_repr_ta, time=time, is_stop=is_stop, min_density=min_density, \
-                     query_weight=query_weight, doc_weight=doc_weight, input_mu=input_mu)
+                     query_weight=query_weight, doc_weight=doc_weight, input_mu=input_mu,
+                     all_position=all_position, direction=direction)
       step = step + tf.where(is_stop, tf.zeros([bs], dtype=tf.int32), tf.ones([bs], dtype=tf.int32))
       # early stop if all is processed
       if jump.endswith('soft'):

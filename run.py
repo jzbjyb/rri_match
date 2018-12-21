@@ -44,7 +44,8 @@ os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 if args.disable_gpu:
   print('diable GPU')
   os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+else:
+  os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 import tensorflow as tf
 from tensorflow.python.ops import variable_scope as vs
@@ -224,7 +225,8 @@ class RRI(object):
   def __init__(self, max_q_len=0, max_d_len=0, max_jump_step=0, word_vector=None, oov_word_vector=None,
          vocab=None, word_vector_trainable=True, use_pad_word=True, 
          interaction='dot', glimpse='fix_hard', glimpse_fix_size=None, min_density=None, use_ratio=False, 
-         min_jump_offset=1, jump='max_hard', represent='sum_hard', input_mu=None, separate=False, aggregate='max', 
+         min_jump_offset=1, jump='max_hard', represent='sum_hard', input_mu=None, separate=False,
+         all_position=True, direction='unidirectional', aggregate='max',
          rnn_size=None, max_jump_offset=None, max_jump_offset2=None, rel_level=2, loss_func='regression', margin=1.0, 
          keep_prob=1.0, paradigm='pointwise', learning_rate=0.1, random_seed=0, 
          n_epochs=100, batch_size=100, batch_num=None, batcher=None, verbose=1, save_epochs=None, reuse_model=None, 
@@ -248,6 +250,8 @@ class RRI(object):
     self.represent = represent
     self.input_mu = input_mu
     self.separate = separate
+    self.all_position = all_position
+    self.direction = direction
     self.aggregate = aggregate
     self.rnn_size = rnn_size
     self.max_jump_offset = max_jump_offset
@@ -519,8 +523,8 @@ class RRI(object):
           word_vector=word_vector_variable, interaction=self.interaction, glimpse=self.glimpse,
           glimpse_fix_size=self.glimpse_fix_size, min_density=self.min_density, use_ratio=self.use_ratio,
           min_jump_offset=self.min_jump_offset, max_jump_offset2=self.max_jump_offset2,
-          jump=self.jump, represent=self.represent, 
-          separate=self.separate, aggregate=self.aggregate, rnn_size=self.rnn_size, 
+          jump=self.jump, represent=self.represent, separate=self.separate, all_position=self.all_position,
+          direction=self.direction, aggregate=self.aggregate, rnn_size=self.rnn_size,
           max_jump_offset=self.max_jump_offset, keep_prob=self.keep_prob_, 
           query_weight=self.query_weight, doc_weight=self.doc_weight, input_mu=self.input_mu)
     initializer = tf.constant_initializer(1) if self.unsupervised else None
@@ -1105,7 +1109,9 @@ def train_test():
     'jump': 'min_density_hard', 
     'represent': 'interaction_cnn_hard',
     'input_mu': None, 
-    'separate': False, 
+    'separate': False,
+    'all_position': False,
+    'direction': 'unidirectional',
     'aggregate': 'max', 
     'rnn_size': 300, 
     'max_jump_offset': max_d_len, 

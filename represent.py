@@ -126,6 +126,8 @@ def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, all_position=False, use
     raise ValueError('cudnn-based implementation does not support bidirectional RNN')
   input_size = emb.get_shape()[1].value
   if direction == 'bidirectional':
+    if rnn_size % 2 != 0:
+      raise ValueError('rnn_size should be even when using bidirectional rnn')
     rnn_size = int(rnn_size / 2)
   if input_size == rnn_size:
     input_mode = 'skip_input'
@@ -136,6 +138,7 @@ def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, all_position=False, use
   print('activation: {}'.format(activation))
   print('use cudnn: {}, input mode: {}'.format(use_cudnn, input_mode))
   print('rnn direction: {}'.format(direction))
+  print('use all position: {}'.format(all_position))
   if use_cudnn:
     if activation == 'relu':
       rnn = CudnnRNNRelu(num_layers=1, num_units=rnn_size, input_size=input_size,
@@ -155,6 +158,8 @@ def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, all_position=False, use
       act = tf.nn.tanh
     rnn_cell = tf.nn.rnn_cell.BasicRNNCell(rnn_size, activation=act)
     initial_state = rnn_cell.zero_state(map_size, dtype=tf.float32)
+  if direction == 'bidirectional':
+    rnn_size *= 2
   def fn(elems):
     start, offset = elems
     # SHAPE: (map_size, padded_length)
@@ -212,10 +217,14 @@ def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, all_position=False, use
     all_state = all_state[:all_piece_len]
   else:
     # SHAPE: (None, map_size, rnn_size)
-    all_state = tf.map_fn(fn, [sp_start, sp], dtype=tf.float32,
-      parallel_iterations=1000, name='bucket_rnn_map_stack')
+    #all_state = tf.map_fn(fn, [sp_start, sp], dtype=tf.float32,
+    #  parallel_iterations=1000, name='bucket_rnn_map_stack')
     # SHAPE: (None, rnn_size)
-    all_state = tf.reshape(all_state, [-1, rnn_size])
+    #all_state = tf.reshape(all_state, [-1, rnn_size])
+    # use map_fn_concat instead of tf.map_fn to avoid bug when there is no piece.
+    # SHAPE: (None, rnn_size)
+    all_state = map_fn_concat(fn, [sp_start, sp], dtype=tf.float32,
+      parallel_iterations=1000, name='bucket_rnn_map_concat')
     # remove padded part
     all_state = all_state[:piece_num]
   return all_state
