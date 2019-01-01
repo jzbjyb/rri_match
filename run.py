@@ -44,8 +44,7 @@ os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 if args.disable_gpu:
   print('diable GPU')
   os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-else:
-  os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 import tensorflow as tf
 from tensorflow.python.ops import variable_scope as vs
@@ -230,8 +229,8 @@ class RRI(object):
          rnn_size=None, max_jump_offset=None, max_jump_offset2=None, rel_level=2, loss_func='regression', margin=1.0, 
          keep_prob=1.0, paradigm='pointwise', learning_rate=0.1, random_seed=0, 
          n_epochs=100, batch_size=100, batch_num=None, batcher=None, verbose=1, save_epochs=None, reuse_model=None, 
-         save_model=None, summary_path=None, tfrecord=False, tfrecord_has_weight=False, unsupervised=False, 
-         small_dataset_num=-1):
+         save_model=None, summary_path=None, tfrecord=False, tfrecord_has_weight=False,
+         tfrecord_has_segmentation=False, unsupervised=False, small_dataset_num=-1):
     self.max_q_len = max_q_len
     self.max_d_len = max_d_len
     self.max_jump_step = max_jump_step
@@ -274,6 +273,7 @@ class RRI(object):
     self.summary_path = summary_path
     self.tfrecord = tfrecord
     self.tfrecord_has_weight = tfrecord_has_weight # wether use doc/query weight or not
+    self.tfrecord_has_segmentation = tfrecord_has_segmentation # wether use doc segmentation or not
     self.unsupervised = unsupervised
     self.match_matrix_focus_debug = False
     # Use a subset of the datasetis for fast development. -1 means using all.
@@ -281,7 +281,7 @@ class RRI(object):
 
 
   @staticmethod
-  def parse_tfexample_fn_pairwise(example_proto, max_q_len, max_d_len, has_weight):
+  def parse_tfexample_fn_pairwise(example_proto, max_q_len, max_d_len, has_weight, has_segmentation):
     '''
     Parse a pairwise record.
     '''
@@ -301,6 +301,9 @@ class RRI(object):
       feature_to_type['query_weight'] = tf.VarLenFeature(dtype=tf.float32)
       feature_to_type['doc1_weight'] = tf.VarLenFeature(dtype=tf.float32)
       feature_to_type['doc2_weight'] = tf.VarLenFeature(dtype=tf.float32)
+    if has_segmentation:
+      feature_to_type['doc1_segmentation'] = tf.VarLenFeature(dtype=tf.int64)
+      feature_to_type['doc2_segmentation'] = tf.VarLenFeature(dtype=tf.int64)
     parsed_features = tf.parse_single_example(example_proto, feature_to_type)
     parsed_features['query'] = tf.sparse_tensor_to_dense(parsed_features['query'])
     parsed_features['doc1'] = tf.sparse_tensor_to_dense(parsed_features['doc1'])
@@ -311,6 +314,9 @@ class RRI(object):
       parsed_features['doc1_weight'] = tf.sparse_tensor_to_dense(parsed_features['doc1_weight'])
       parsed_features['doc2_weight'] = tf.sparse_tensor_to_dense(parsed_features['doc2_weight'])
       query_weight = tf.stack([parsed_features['query_weight'], parsed_features['query_weight']])
+    if has_segmentation:
+      parsed_features['doc1_segmentation'] = tf.sparse_tensor_to_dense(parsed_features['doc1_segmentation'])
+      parsed_features['doc2_segmentation'] = tf.sparse_tensor_to_dense(parsed_features['doc2_segmentation'])
     qid = tf.stack([parsed_features['qid'], parsed_features['qid']])
     d1l = tf.shape(parsed_features['doc1'])[0]
     d2l = tf.shape(parsed_features['doc2'])[0]
@@ -320,6 +326,9 @@ class RRI(object):
     if has_weight:
       doc_weight = tf.stack([tf.pad(parsed_features['doc1_weight'], [[0, max_doc_len-d1l]]),
         tf.pad(parsed_features['doc2_weight'], [[0, max_doc_len-d2l]])], axis=0)
+    if has_segmentation:
+      doc_seg = tf.stack([tf.pad(parsed_features['doc1_segmentation'], [[0, max_doc_len-d1l]]),
+        tf.pad(parsed_features['doc2_segmentation'], [[0, max_doc_len-d2l]])], axis=0)
     docid = tf.stack([parsed_features['docid1'], parsed_features['docid2']])
     qd_size1 = tf.concat([parsed_features['qlen'], parsed_features['doc1len']], axis=0)
     qd_size2 = tf.concat([parsed_features['qlen'], parsed_features['doc2len']], axis=0)
@@ -333,9 +342,13 @@ class RRI(object):
     else:
       query_weight = tf.zeros_like(query, dtype=tf.float32)
       doc_weight = tf.zeros_like(doc, dtype=tf.float32)
+    if has_segmentation:
+      doc_seg = doc_seg[:, :max_d_len]
+    else:
+      doc_seg = tf.zeros_like(doc)
     qd_size = tf.minimum(qd_size, [[max_q_len, max_d_len]])
     #return tf.data.Dataset.from_tensor_slices((query, doc, qd_size, relevance, qid, docid))
-    return query, query_weight, doc, doc_weight, qd_size, relevance, qid, docid
+    return query, query_weight, doc, doc_weight, qd_size, relevance, qid, docid, doc_seg
 
 
   @staticmethod
@@ -344,7 +357,7 @@ class RRI(object):
 
 
   @staticmethod
-  def parse_tfexample_fn_pointwise(example_proto, max_q_len, max_d_len, has_weight):
+  def parse_tfexample_fn_pointwise(example_proto, max_q_len, max_d_len, has_weight, has_segmentation):
     '''
     Parse a pointwise record.
     '''
@@ -360,12 +373,16 @@ class RRI(object):
     if has_weight:
       feature_to_type['query_weight'] = tf.VarLenFeature(dtype=tf.float32)
       feature_to_type['doc_weight'] = tf.VarLenFeature(dtype=tf.float32)
+    if has_segmentation:
+      feature_to_type['doc_segmentation'] = tf.VarLenFeature(dtype=tf.int64)
     parsed_features = tf.parse_single_example(example_proto, feature_to_type)
     parsed_features['query'] = tf.sparse_tensor_to_dense(parsed_features['query'])
     parsed_features['doc'] = tf.sparse_tensor_to_dense(parsed_features['doc'])
     if has_weight:
       parsed_features['query_weight'] = tf.sparse_tensor_to_dense(parsed_features['query_weight'])
       parsed_features['doc_weight'] = tf.sparse_tensor_to_dense(parsed_features['doc_weight'])
+    if has_segmentation:
+      parsed_features['doc_segmentation'] = tf.sparse_tensor_to_dense(parsed_features['doc_segmentation'])
     query = parsed_features['query']
     doc = parsed_features['doc']
     qd_size = tf.concat([parsed_features['qlen'], parsed_features['doclen']], axis=0)
@@ -378,9 +395,13 @@ class RRI(object):
     else:
       query_weight = tf.zeros_like(query, dtype=tf.float32)
       doc_weight = tf.zeros_like(doc, dtype=tf.float32)
+    if has_segmentation:
+      doc_seg = parsed_features['doc_segmentation'][:max_d_len]
+    else:
+      doc_seg = tf.zeros_like(doc)
     qd_size = tf.minimum(qd_size, [max_q_len, max_d_len])
     return query, query_weight, doc, doc_weight, qd_size, relevance, \
-      parsed_features['qid'], parsed_features['docid']
+      parsed_features['qid'], parsed_features['docid'], doc_seg
 
 
   def build_graph(self):
@@ -403,6 +424,8 @@ class RRI(object):
         self.qid = tf.placeholder(tf.string, shape=[None], name='qid')
         # docid
         self.docid = tf.placeholder(tf.string, shape=[None], name='docid')
+        # doc segmentation, 1 means split and 0 means following
+        self.doc_seg = tf.placeholder(tf.int32, shape=[None, None], name='doc_seg')
       else:
         '''
         tfrecord input
@@ -444,11 +467,13 @@ class RRI(object):
           if paradigm == 'pointwise':
             dataset = dataset.map(functools.partial(parse_fn, 
               max_q_len=self.max_q_len, max_d_len=self.max_d_len, 
-              has_weight=self.tfrecord_has_weight), num_parallel_calls=4)
+              has_weight=self.tfrecord_has_weight,
+              has_segmentation=self.tfrecord_has_segmentation), num_parallel_calls=4)
           elif paradigm == 'pairwise':
             dataset = dataset.map(functools.partial(parse_fn, 
               max_q_len=self.max_q_len, max_d_len=self.max_d_len, 
-              has_weight=self.tfrecord_has_weight), num_parallel_calls=4)
+              has_weight=self.tfrecord_has_weight,
+              has_segmentation=self.tfrecord_has_segmentation), num_parallel_calls=4)
           if paradigm == 'pairwise':
             # flatten pairwise samples
             dataset = dataset.flat_map(RRI.flat_map_tensor)
@@ -482,13 +507,14 @@ class RRI(object):
         self.test_data_init_op = test_dataset.make_initializable_iterator()
         self.decision_data_init_op = decision_dataset.make_initializable_iterator()
         self.query, self.query_weight, self.doc, self.doc_weight, self.qd_size, \
-          self.relevance, self.qid, self.docid = dataset_iterator.get_next()
+          self.relevance, self.qid, self.docid, self.doc_seg = dataset_iterator.get_next()
         self.query = tf.cast(self.query, dtype=tf.int32)
         self.doc = tf.cast(self.doc, dtype=tf.int32)
         self.qd_size = tf.cast(self.qd_size, dtype=tf.int32)
         self.relevance = tf.squeeze(tf.cast(self.relevance, dtype=tf.int32))
         self.qid = tf.squeeze(self.qid)
         self.docid = tf.squeeze(self.docid)
+        self.doc_seg = tf.cast(self.doc_seg, dtype=tf.int32)
       self.keep_prob_ = tf.placeholder(tf.float32) # dropout prob
     with vs.variable_scope('InputProcessing'):
       print('word vector trainable: {}'.format(self.word_vector_trainable))
@@ -1134,6 +1160,7 @@ def train_test():
     'summary_path': args.tf_summary_path,
     'tfrecord': args.tfrecord,
     'tfrecord_has_weight': False,
+    'tfrecord_has_segmentation': False,
     'unsupervised': False,
     'small_dataset_num': -1,
   }

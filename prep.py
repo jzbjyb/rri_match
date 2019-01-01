@@ -428,7 +428,7 @@ def gen_pairwise():
       print('from {} to {} in {}'.format(all_pointwise, all_pairwise, fn_out))
 
 
-def gen_tfrecord(bow=False):
+def gen_tfrecord(bow=False, segmentation=False):
   # number of tfrecord file to save
   num_shards = 1
   print('use {} shards'.format(num_shards))
@@ -440,6 +440,8 @@ def gen_tfrecord(bow=False):
   else:
     doc_file = os.path.join(args.data_dir, 'docs_bow.prep')
     doc_weight_file = os.path.join(args.data_dir, 'docs_bow_weight.prep')
+  if segmentation:
+    doc_seg_file = os.path.join(args.data_dir, 'docs_seg.prep')
   if args.format == 'ir':
     if not bow:
       query_file = os.path.join(args.data_dir, 'query.prep')
@@ -457,6 +459,8 @@ def gen_tfrecord(bow=False):
       query_raw_weight = load_prep_file(query_weight_file, file_format=args.format, func=float)
     else:
       query_raw_weight = doc_raw_weight
+  if segmentation:
+    doc_seg = load_prep_file(doc_seg_file, file_format=args.format)
   train_filename = os.path.join(args.data_dir, 'train.prep.{}'.format(args.paradigm))
   test_filename = os.path.join(args.data_dir, 'test.prep.{}'.format(args.paradigm))
   for fn in [train_filename, test_filename]:
@@ -480,6 +484,8 @@ def gen_tfrecord(bow=False):
         if bow:
           features['doc_weight'] = tf.train.Feature(
             float_list=tf.train.FloatList(value=doc_raw_weight[d]))
+        if segmentation:
+          features['doc_segmentation'] = tf.train.Feature(int64_list=tf.train.Int64List(value=doc_seg[d]))
         features['doclen'] = tf.train.Feature(
           int64_list=tf.train.Int64List(value=[len(doc_raw[d])]))
       elif args.paradigm == 'pairwise':
@@ -496,6 +502,9 @@ def gen_tfrecord(bow=False):
             float_list=tf.train.FloatList(value=doc_raw_weight[d1]))
           features['doc2_weight'] = tf.train.Feature(
             float_list=tf.train.FloatList(value=doc_raw_weight[d2]))
+        if segmentation:
+          features['doc1_segmentation'] = tf.train.Feature(int64_list=tf.train.Int64List(value=doc_seg[d1]))
+          features['doc2_segmentation'] = tf.train.Feature(int64_list=tf.train.Int64List(value=doc_seg[d2]))
         features['doc1len'] = tf.train.Feature(
           int64_list=tf.train.Int64List(value=[len(doc_raw[d1])]))
         features['doc2len'] = tf.train.Feature(
@@ -594,7 +603,7 @@ if __name__ == '__main__':
     usage: python prep.py -a gen_tfrecord -d data_dir -f text -p pointwise
     remember to modify the bow parameter.
     '''
-    gen_tfrecord(bow=False)
+    gen_tfrecord(bow=False, segmentation=True)
   elif args.action == 'drop_negative':
     # random drop some negative samples to make training balanced
     drop_negative()
