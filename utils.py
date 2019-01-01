@@ -105,24 +105,25 @@ def save_prep_file(filepath, docs, file_format='ir'):
                 raise Exception()
 
 
-def load_prep_file_aslist(filepath, file_format='ir'):
+def load_prep_file_aslist(filepath, file_format='ir', use_split=False, func=int):
     '''
-    load the word sequence without splitting.
+    load the word sequence with or without splitting.
     '''
     result = []
     with open(filepath, 'r') as fp:
-        for l in fp:
+        for i, l in enumerate(fp):
             l = l.rstrip('\n')
             if len(l) == 0:
                 continue
             if file_format == 'ir':
                 k, ws = l.split('\t')
-                result.append((k, ws))
             elif file_format == 'text':
                 k, ws = l.split(' ', 1)
-                result.append((k, ws))
             else:
                 raise Exception()
+            if use_split:
+                ws = [func(w) for w in ws.split(' ') if len(w) > 0]
+            result.append((k, ws))
     return result
 
 
