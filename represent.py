@@ -230,10 +230,11 @@ def bucket_rnn_map_fn(x, x_weight, sp, emb, map_size=10, all_position=False, use
   return all_state
 
 def piece_rnn_with_bucket(cond, cond_value, seq, seq_len, emb, use_single=True, all_position=False,
-  use_cudnn=True, direction='unidirectional', rnn_size=128, activation='relu', label=''):
+  use_cudnn=True, direction='unidirectional', rnn_size=128, activation='relu', seq_seg=None, label=''):
   '''
   If all_position=False, we only use the last hidden state of each piece.
   If all_position=True, we use all the hidden states for each piece.
+  seq_seg is the segmentation sequence, where 1 is split and 0 is not split.
   '''
   # get length of each piece and number of pieces of each sample
   bs = tf.shape(cond)[0]
@@ -241,6 +242,22 @@ def piece_rnn_with_bucket(cond, cond_value, seq, seq_len, emb, use_single=True, 
   cond_pad = tf.pad(cond, [[0,0], [1,1]], 'CONSTANT', constant_values=False)
   cond_start = tf.logical_and(tf.logical_not(cond_pad[:, :-2]), cond)
   cond_end = tf.logical_and(tf.logical_not(cond_pad[:, 2:]), cond)
+  print('use segmentation: {}'.format(seq_seg is not None))
+  if seq_seg is not None:
+    seg_start = tf.cast(seq_seg, dtype=tf.bool)
+    seg_start = tf.Print(seg_start, [seg_start[:3, :10]], message='seg_start', summarize=50)
+    seg_end = tf.pad(seq_seg, [[0,0], [0,1]], 'CONSTANT', constant_values=0) # the last word is missed
+    seg_end = tf.cast(seg_end[:, 1:], dtype=tf.bool)
+    seg_end = tf.Print(seg_end, [seg_end[:3, :10]], message='seg_end', summarize=50)
+    # only focus on region selected by cond
+    seg_start = tf.logical_and(cond, seg_start)
+    seg_end = tf.logical_and(cond, seg_end)
+    cond = tf.Print(cond, [cond[:3, :10]], message='cond!', summarize=50)
+    seg_start = tf.Print(seg_start, [seg_start[:3, :10]], message='seg_start!', summarize=50)
+    seg_end = tf.Print(seg_end, [seg_end[:3, :10]], message='seg_end!', summarize=50)
+    # combine two boundaries
+    cond_start = tf.logical_or(cond_start, seg_start)
+    cond_end = tf.logical_or(cond_end, seg_end)
   print('use single: {}'.format(use_single))
   if not use_single:
     is_not_single = tf.logical_not(tf.logical_and(cond_start, cond_end))
@@ -531,8 +548,8 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
   with vs.variable_scope('RNNRegionRepresenter'):
     doc_piece_emb, doc_piece_num = piece_rnn_with_bucket(
       doc_decision, doc_decision_value, doc, dq_size[0], word_vector, use_single=kwargs['use_single'], label='doc ',
-      all_position=kwargs['all_position'], use_cudnn=kwargs['use_cudnn'], direction=kwargs['direction'],
-      rnn_size=kwargs['rnn_size'], activation=kwargs['activation'])
+      all_position=kwargs['all_position'], use_cudnn=kwargs['use_cudnn'], seq_seg=kwargs['doc_seg'],
+      direction=kwargs['direction'], rnn_size=kwargs['rnn_size'], activation=kwargs['activation'])
     #print('use rnn state exaggeration')
     #doc_piece_emb *= 5.0
     if not query_as_unigram:
@@ -540,7 +557,7 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
       query_piece_emb, query_piece_num = piece_rnn_with_bucket(
         query_decision, query_decision_value, query, dq_size[1], word_vector, use_single=kwargs['use_single'],
         all_position=kwargs['all_position'], use_cudnn=kwargs['use_cudnn'], direction=kwargs['direction'],
-        rnn_size=kwargs['rnn_size'], activation=kwargs['activation'], label='query ')
+        rnn_size=kwargs['rnn_size'], activation=kwargs['activation'], seq_seg=None, label='query ')
     else:
       query_piece_emb = mlp(tf.reshape(query_emb, [-1, emb_size]),
         architecture=[kwargs['rnn_size']], activation=kwargs['activation'])

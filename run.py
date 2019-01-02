@@ -514,7 +514,7 @@ class RRI(object):
         self.relevance = tf.squeeze(tf.cast(self.relevance, dtype=tf.int32))
         self.qid = tf.squeeze(self.qid)
         self.docid = tf.squeeze(self.docid)
-        self.doc_seg = tf.cast(self.doc_seg, dtype=tf.int32)
+        self.doc_seg = tf.cast(self.doc_seg, dtype=tf.int32) if self.tfrecord_has_segmentation else None
       self.keep_prob_ = tf.placeholder(tf.float32) # dropout prob
     with vs.variable_scope('InputProcessing'):
       print('word vector trainable: {}'.format(self.word_vector_trainable))
@@ -552,7 +552,8 @@ class RRI(object):
           jump=self.jump, represent=self.represent, separate=self.separate, all_position=self.all_position,
           direction=self.direction, aggregate=self.aggregate, rnn_size=self.rnn_size,
           max_jump_offset=self.max_jump_offset, keep_prob=self.keep_prob_, 
-          query_weight=self.query_weight, doc_weight=self.doc_weight, input_mu=self.input_mu)
+          query_weight=self.query_weight, doc_weight=self.doc_weight, input_mu=self.input_mu,
+          doc_seg=self.doc_seg)
     initializer = tf.constant_initializer(1) if self.unsupervised else None
     if self.loss_func == 'classification':
       with vs.variable_scope('ClassificationLoss'):
