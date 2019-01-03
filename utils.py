@@ -116,7 +116,7 @@ def load_prep_file_aslist(filepath, file_format='ir', use_split=False, func=int)
             if len(l) == 0:
                 continue
             if file_format == 'ir':
-                k, ws = l.split('\t')
+                k, ws = l.split('\t', 1)
             elif file_format == 'text':
                 k, ws = l.split(' ', 1)
             else:
