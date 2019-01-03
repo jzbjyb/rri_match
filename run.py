@@ -44,7 +44,8 @@ os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 if args.disable_gpu:
   print('diable GPU')
   os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+if not args.debug:
+  os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 import tensorflow as tf
 from tensorflow.python.ops import variable_scope as vs
@@ -598,6 +599,8 @@ class RRI(object):
     self.saver = tf.train.Saver()
     if self.summary_path != None:
       self.summaries = tf.summary.merge_all()
+      if self.summaries is None:
+        self.summaries = tf.no_op()
       self.train_writer = tf.summary.FileWriter(os.path.join(self.summary_path, 'train'), self.graph_)
     if self.match_matrix_focus_debug:
       self.saliency = tf.gradients(-self.loss, [self.rri_info['match_matrix']])[0]
@@ -757,7 +760,8 @@ class RRI(object):
               global_step = (epoch - 1) * self.batch_num + i
               #print('adding summary for {}'.format(global_step))
               #self.train_writer.add_run_metadata(run_metadata, 'step%d' % global_step)
-              self.train_writer.add_summary(summaries, global_step=global_step)
+              if summaries is not None:
+                self.train_writer.add_summary(summaries, global_step=global_step)
               if trace_op:
                 profiler_opts = builder(builder.time_and_memory()).order_by('micros').build()
                 tf.profiler.profile(self.graph_, run_meta=run_metadata, cmd='scope', options=profiler_opts)

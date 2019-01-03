@@ -174,8 +174,8 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
     if kwargs['direction'] == 'bidirectional':
       use_cudnn = False
     state_ta, representation = cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, 
-      word_vector, use_combine=True, query_as_unigram=True, threshold=0.4, use_single=False,
-      use_cudnn=use_cudnn, activation='tanh', **kwargs)
+      word_vector, use_combine=True, query_as_unigram=True, no_region_selection=False, threshold=0.4,
+      use_single=False, use_cudnn=use_cudnn, activation='tanh', **kwargs)
   elif represent == 'sum_match_matrix_kernel_hard':
     '''
     K-NRM-like kernels

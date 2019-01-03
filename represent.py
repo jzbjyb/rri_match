@@ -503,6 +503,7 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
   emb_size = word_vector.get_shape()[1].value
   max_q_len = tf.shape(query)[1]
   max_d_len = tf.shape(doc)[1]
+  no_region_selection = kwargs['no_region_selection'] # use all the doc and query terms
   thres = kwargs['threshold']
   all_position = kwargs['all_position']
   time = kwargs['time']
@@ -510,25 +511,29 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
   query_as_unigram = kwargs['query_as_unigram']
   rnn_size = kwargs['rnn_size']
   use_combine = kwargs['use_combine']
+  print('no region selection: {}'.format(no_region_selection))
   print('threshold: {}'.format(thres))
   print('use combine: {}'.format(use_combine))
   # use CNN applied on text to choose regions
   with vs.variable_scope('CNNTextRegionFinder'):
-    '''
-    with vs.variable_scope('DocCNN'):
-      # SHAPE: (batch_size, max_d_len, emb_size)
-      doc_after_cnn =  cnn(doc_emb, architecture=[[5, emb_size, emb_size], [1]], 
-        activation='tanh')
-    with vs.variable_scope('QueryCNN'):
-      # SHAPE: (batch_size, max_q_len, emb_size)
-      query_after_cnn =  cnn(query_emb, architecture=[[1, emb_size, emb_size], [1]], 
-        activation='tanh')
-    # SHAPE: (batch_size, max_d_len, max_q_len)
-    match_matrix_for_decision = tf.matmul(doc_after_cnn, tf.transpose(query_after_cnn, [0, 2, 1]))
-    '''
-    match_matrix_for_decision = match_matrix
-    # both positive and negative matching are important
-    match_matrix_for_decision = tf.abs(match_matrix_for_decision)
+    if no_region_selection:
+      match_matrix_for_decision = tf.ones_like(match_matrix) * (thres + 1)
+    else:
+      '''
+      with vs.variable_scope('DocCNN'):
+        # SHAPE: (batch_size, max_d_len, emb_size)
+        doc_after_cnn =  cnn(doc_emb, architecture=[[5, emb_size, emb_size], [1]], 
+          activation='tanh')
+      with vs.variable_scope('QueryCNN'):
+        # SHAPE: (batch_size, max_q_len, emb_size)
+        query_after_cnn =  cnn(query_emb, architecture=[[1, emb_size, emb_size], [1]], 
+          activation='tanh')
+      # SHAPE: (batch_size, max_d_len, max_q_len)
+      match_matrix_for_decision = tf.matmul(doc_after_cnn, tf.transpose(query_after_cnn, [0, 2, 1]))
+      '''
+      match_matrix_for_decision = match_matrix
+      # both positive and negative matching are important
+      match_matrix_for_decision = tf.abs(match_matrix_for_decision)
     # mask out the words beyond the boundary
     doc_mask = tf.expand_dims(tf.range(max_d_len), dim=0) < tf.reshape(dq_size[:1], [bs, 1])
     query_mask = tf.expand_dims(tf.range(max_q_len), dim=0) < tf.reshape(dq_size[1:], [bs, 1])
@@ -546,34 +551,60 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
       [tf.reduce_mean(tf.reduce_sum(tf.cast(query_decision, tf.float32), axis=1))], 
       message='avg all query piece:')
   with vs.variable_scope('RNNRegionRepresenter'):
-    doc_piece_emb, doc_piece_num = piece_rnn_with_bucket(
-      doc_decision, doc_decision_value, doc, dq_size[0], word_vector, use_single=kwargs['use_single'], label='doc ',
-      all_position=kwargs['all_position'], use_cudnn=kwargs['use_cudnn'], seq_seg=kwargs['doc_seg'],
-      direction=kwargs['direction'], rnn_size=kwargs['rnn_size'], activation=kwargs['activation'])
-    #print('use rnn state exaggeration')
-    #doc_piece_emb *= 5.0
+    use_doc_rnn = False
+    if False:
+      print('=== doc rnn ===')
+      use_doc_rnn = True
+      doc_piece_emb, doc_piece_num = piece_rnn_with_bucket(
+        doc_decision, doc_decision_value, doc, dq_size[0], word_vector, use_single=kwargs['use_single'], label='doc ',
+        all_position=kwargs['all_position'], use_cudnn=kwargs['use_cudnn'], seq_seg=kwargs['doc_seg'],
+        direction=kwargs['direction'], rnn_size=kwargs['rnn_size'], activation=kwargs['activation'])
+      #print('use rnn state exaggeration')
+      #doc_piece_emb *= 5.0
+    else:
+      with vs.variable_scope('BigramCNN'):
+        print('=== doc cnn ===')
+        doc_piece_emb = cnn(doc_emb, architecture=[[2, emb_size, rnn_size], [1]], activation='relu')
+        #doc_piece_emb = mlp(tf.reshape(doc_emb, [-1, 2 * emb_size]), architecture=[kwargs['rnn_size']],
+        #  activation=kwargs['activation'])
+        #doc_piece_emb = tf.reshape(doc_piece_emb, [bs, max_d_len // 2, rnn_size])
+        #doc_piece_num = dq_size[0] // 2
+        doc_piece_num = dq_size[0]
     if not query_as_unigram:
-      vs.get_variable_scope().reuse_variables()
+      print('=== query rnn ===')
+      if use_doc_rnn:
+        # If doc is modeled using rnn, use the same parameter for query rnn.
+        vs.get_variable_scope().reuse_variables()
       query_piece_emb, query_piece_num = piece_rnn_with_bucket(
-        query_decision, query_decision_value, query, dq_size[1], word_vector, use_single=kwargs['use_single'],
-        all_position=kwargs['all_position'], use_cudnn=kwargs['use_cudnn'], direction=kwargs['direction'],
+        query_decision, query_decision_value, query, dq_size[1], word_vector, use_single=True,
+        all_position=True, use_cudnn=kwargs['use_cudnn'], direction=kwargs['direction'],
         rnn_size=kwargs['rnn_size'], activation=kwargs['activation'], seq_seg=None, label='query ')
     else:
-      query_piece_emb = mlp(tf.reshape(query_emb, [-1, emb_size]),
-        architecture=[kwargs['rnn_size']], activation=kwargs['activation'])
-      query_piece_emb = tf.reshape(query_piece_emb, [bs, max_q_len, rnn_size])
-      #query_piece_emb = query_emb
-      query_piece_num = dq_size[1]
+      query_ngram = 2
+      if query_ngram == 1:
+        print('=== query mlp (cnn with unigram) ===')
+        query_piece_emb = mlp(tf.reshape(query_emb, [-1, emb_size]),
+          architecture=[kwargs['rnn_size']], activation='relu')
+        query_piece_emb = tf.reshape(query_piece_emb, [bs, max_q_len, rnn_size])
+        #query_piece_emb = query_emb
+        query_piece_num = dq_size[1]
+      elif query_ngram == 2:
+        with vs.variable_scope('BigramCNN'):
+          vs.get_variable_scope().reuse_variables()
+          print('=== query mlp (cnn with bigram) ===')
+          query_piece_emb = cnn(query_emb, architecture=[[2, emb_size, rnn_size], [1]], activation='relu')
+          query_piece_num = dq_size[1]
   with vs.variable_scope('KNRMAggregator'):
-    '''
-    print('use cosine normalization')
-    doc_emb_norm = tf.sqrt(tf.reduce_sum(tf.square(doc_piece_emb), axis=2, keep_dims=True))
-    doc_emb_norm += tf.cast(tf.equal(doc_emb_norm, 0), dtype=tf.float32)
-    query_emb_norm = tf.sqrt(tf.reduce_sum(tf.square(query_piece_emb), axis=2, keep_dims=True))
-    query_emb_norm += tf.cast(tf.equal(query_emb_norm, 0), dtype=tf.float32)
-    doc_piece_emb = doc_piece_emb / doc_emb_norm
-    query_piece_emb = query_piece_emb / query_emb_norm
-    '''
+    if True:
+      print('use cosine normalization')
+      doc_emb_norm = tf.sqrt(tf.reduce_sum(tf.square(doc_piece_emb), axis=2, keep_dims=True))
+      doc_emb_norm += tf.cast(tf.equal(doc_emb_norm, 0), dtype=tf.float32)
+      #doc_emb_norm = tf.minimum(tf.maximum(doc_emb_norm, 1), 2)
+      query_emb_norm = tf.sqrt(tf.reduce_sum(tf.square(query_piece_emb), axis=2, keep_dims=True))
+      query_emb_norm += tf.cast(tf.equal(query_emb_norm, 0), dtype=tf.float32)
+      #query_emb_norm = tf.minimum(tf.maximum(query_emb_norm, 1), 2)
+      doc_piece_emb = doc_piece_emb / doc_emb_norm
+      query_piece_emb = query_piece_emb / query_emb_norm
     local_match_matrix = tf.matmul(doc_piece_emb, tf.transpose(query_piece_emb, [0, 2, 1]))
     local_max_q_len = tf.shape(query_piece_emb)[1]
     local_max_d_len = tf.shape(doc_piece_emb)[1]
@@ -581,10 +612,11 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
     if 'input_mu' in kwargs and kwargs['input_mu'] != None:
         input_mu = kwargs['input_mu']
     else:
-        input_mu = np.array(list(range(-20,20+1,1)))/20
-    #input_mu = [1.0]
+        #input_mu = np.array(list(range(-20,20+1,1)))/20
+        input_mu = np.array(list(range(-10, 10 + 1, 2))) / 10
     number_of_bin = len(input_mu)-1
-    input_sigma =  [0.025] * number_of_bin + [0.025]
+    #input_sigma =  [0.025] * number_of_bin + [0.025]
+    input_sigma = [0.1] * number_of_bin + [0.00001]
     if not use_combine:
       state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta,
         lambda: state_ta.write(0, tf.zeros([bs, number_of_bin+1], dtype=tf.float32)))
