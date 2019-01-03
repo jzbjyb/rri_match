@@ -125,7 +125,7 @@ def load_from_html_cascade(filename, binary=False):
   return result
 
 
-def preprocess():
+def preprocess(field='body'):
   binary = args.binary_html
   data_dir = args.data_dir
   max_vocab_size = args.max_vocab_size
@@ -149,12 +149,12 @@ def preprocess():
     count += 1
     if count % 10000 == 0:
       print('processed {}w docs'.format(count // 10000))
-    doc_body = load_from_html_cascade(os.path.join(docs_dir, docid + '.html'), binary=binary)['body']
-    doc_dict[docid] = doc_body
+    loaded_html = load_from_html_cascade(os.path.join(docs_dir, docid + '.html'), binary=binary)
+    doc_dict[docid] = loaded_html[field]
     #print(docid)
     #print(' '.join(doc_body))
     #input()
-    for term in doc_body:
+    for term in doc_dict[docid]:
       vocab.add(term)
   vocab.build()
   vocab.save_to_file(os.path.join(data_dir, 'vocab'))
@@ -169,13 +169,13 @@ def preprocess():
   with open(os.path.join(data_dir, 'docs.prep'), 'w') as fp:
     for docid in sorted(doc_ids):
       if docid in doc_dict:
-        doc_body = doc_dict[docid]
+        doc_text = doc_dict[docid]
       else:
-        doc_body = load_from_html_cascade(os.path.join(docs_dir, docid + '.html'), binary=binary)['body']
-      if len(doc_body) == 0:
+        doc_text = load_from_html_cascade(os.path.join(docs_dir, docid + '.html'), binary=binary)[field]
+      if len(doc_text) == 0:
         empty_docid.add(docid)
         continue
-      fp.write('{}\t{}\n'.format(docid, ' '.join(map(lambda x: str(x), vocab.encode(doc_body)))))
+      fp.write('{}\t{}\n'.format(docid, ' '.join(map(lambda x: str(x), vocab.encode(doc_text)))))
   print('have {} empty query, have {} empty doc'.format(len(empty_qid), len(empty_docid)))
   filter_samples(train_filepath, '{}.prep.{}'.format(*train_filepath.rsplit('.', 1)), empty_qid, empty_docid)
   filter_samples(test_filepath, '{}.prep.{}'.format(*test_filepath.rsplit('.', 1)), empty_qid, empty_docid)
