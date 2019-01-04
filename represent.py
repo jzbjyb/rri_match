@@ -551,6 +551,14 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
       [tf.reduce_mean(tf.reduce_sum(tf.cast(query_decision, tf.float32), axis=1))], 
       message='avg all query piece:')
   with vs.variable_scope('RNNRegionRepresenter'):
+    def get_ngram_cnn_vs_name(ngram):
+      if ngram == 1:
+        return 'UnigramCNN'
+      if ngram == 2:
+        return 'BigramCNN'
+      if ngram == 3:
+        return 'TrigramCNN'
+      raise ValueError('not supported ngram')
     use_doc_rnn = False
     if False:
       print('=== doc rnn ===')
@@ -562,13 +570,11 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
       #print('use rnn state exaggeration')
       #doc_piece_emb *= 5.0
     else:
-      with vs.variable_scope('BigramCNN'):
-        print('=== doc cnn ===')
-        doc_piece_emb = cnn(doc_emb, architecture=[[2, emb_size, rnn_size], [1]], activation='relu')
-        #doc_piece_emb = mlp(tf.reshape(doc_emb, [-1, 2 * emb_size]), architecture=[kwargs['rnn_size']],
-        #  activation=kwargs['activation'])
-        #doc_piece_emb = tf.reshape(doc_piece_emb, [bs, max_d_len // 2, rnn_size])
-        #doc_piece_num = dq_size[0] // 2
+      doc_ngram = 3
+      doc_vs_name = get_ngram_cnn_vs_name(doc_ngram)
+      with vs.variable_scope(doc_vs_name):
+        print('=== doc {} ==='.format(doc_vs_name))
+        doc_piece_emb = cnn(doc_emb, architecture=[[doc_ngram, emb_size, rnn_size], [1]], activation='relu')
         doc_piece_num = dq_size[0]
     if not query_as_unigram:
       print('=== query rnn ===')
@@ -580,20 +586,23 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
         all_position=True, use_cudnn=kwargs['use_cudnn'], direction=kwargs['direction'],
         rnn_size=kwargs['rnn_size'], activation=kwargs['activation'], seq_seg=None, label='query ')
     else:
-      query_ngram = 1
-      if query_ngram == 1:
-        print('=== query mlp (cnn with unigram) ===')
-        query_piece_emb = mlp(tf.reshape(query_emb, [-1, emb_size]),
-          architecture=[kwargs['rnn_size']], activation='relu')
-        query_piece_emb = tf.reshape(query_piece_emb, [bs, max_q_len, rnn_size])
-        #query_piece_emb = query_emb
-        query_piece_num = dq_size[1]
-      elif query_ngram == 2:
-        with vs.variable_scope('BigramCNN'):
+      query_ngram = 3
+      query_vs_name = get_ngram_cnn_vs_name(query_ngram)
+      with vs.variable_scope(query_vs_name):
+        if doc_ngram == query_ngram:
+          print('reuse {} parameter'.format(query_vs_name))
           vs.get_variable_scope().reuse_variables()
-          print('=== query mlp (cnn with bigram) ===')
-          query_piece_emb = cnn(query_emb, architecture=[[2, emb_size, rnn_size], [1]], activation='relu')
-          query_piece_num = dq_size[1]
+        print('=== query {} ==='.format(query_vs_name))
+        query_piece_emb = cnn(query_emb, architecture=[[query_ngram, emb_size, rnn_size], [1]], activation='relu')
+        query_piece_num = dq_size[1]
+      '''
+      print('=== query mlp (cnn with unigram) ===')
+      query_piece_emb = mlp(tf.reshape(query_emb, [-1, emb_size]),
+        architecture=[kwargs['rnn_size']], activation='relu')
+      query_piece_emb = tf.reshape(query_piece_emb, [bs, max_q_len, rnn_size])
+      #query_piece_emb = query_emb
+      query_piece_num = dq_size[1]
+      '''
   with vs.variable_scope('KNRMAggregator'):
     if True:
       print('use cosine normalization')
