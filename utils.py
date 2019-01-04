@@ -238,7 +238,8 @@ def my_word_tokenize(text):
     return text
 
 
-def load_from_html(filename, use_boilerpipe=True, use_nltk=True, use_regex=True, binary=False):
+def load_from_html(filename, use_boilerpipe=True, use_nltk=True, use_regex=True,
+    binary=False, field=['title', 'body']):
     if binary:
         charset = UnicodeDammit(open(filename, 'rb').read())
         charset = charset.original_encoding
@@ -256,38 +257,41 @@ def load_from_html(filename, use_boilerpipe=True, use_nltk=True, use_regex=True,
     start = time.time()
     if not use_regex or not use_boilerpipe:
         bs = BeautifulSoup(content, 'html.parser')
-    if use_regex:
-        match = re.search(r'<title.*?>(.+?)</title>', content[:5000], re.DOTALL|re.IGNORECASE)
-        title = match.group(1) if match else ''
-        title = html.unescape(title).strip()
-    else:
-        if bs.title != None and bs.title.string != None:
-            title = bs.title.string.strip()
+    if 'title' in field:
+        if use_regex:
+            match = re.search(r'<title.*?>(.+?)</title>', content[:5000], re.DOTALL|re.IGNORECASE)
+            title = match.group(1) if match else ''
+            title = html.unescape(title).strip()
         else:
-            title = ''
+            if bs.title != None and bs.title.string != None:
+                title = bs.title.string.strip()
+            else:
+                title = ''
     t1 = time.time() - start
     start = time.time()
-    if use_boilerpipe:
-        extractor = Extractor(extractor='ArticleExtractor', html=content) # time consuming
-        body = extractor.getText()
-    else:
-        body = bs.select('body')
-        if len(body) <= 0:
-            body = bs
+    if 'body' in field:
+        if use_boilerpipe:
+            extractor = Extractor(extractor='ArticleExtractor', html=content) # time consuming
+            body = extractor.getText()
         else:
-            body = body[0]
-        # remove all useless label
-        [x.extract() for x in body.findAll('script')]
-        [x.extract() for x in body.findAll('style')]
-        [x.extract() for x in body.findAll('meta')]
-        [x.extract() for x in body.findAll('link')]
-        body = body.text
+            body = bs.select('body')
+            if len(body) <= 0:
+                body = bs
+            else:
+                body = body[0]
+            # remove all useless label
+            [x.extract() for x in body.findAll('script')]
+            [x.extract() for x in body.findAll('style')]
+            [x.extract() for x in body.findAll('meta')]
+            [x.extract() for x in body.findAll('link')]
+            body = body.text
     t2 = time.time() - start
     start = time.time()
-    result = {
-        'title': my_word_tokenize(title) if use_nltk else clean_text(title).split(' '),
-        'body': my_word_tokenize(body) if use_nltk else clean_text(body).split(' '),
-    }
+    result = {}
+    if 'title' in field:
+        result['title'] = my_word_tokenize(title) if use_nltk else clean_text(title).split(' ')
+    if 'body' in field:
+        result['body'] = my_word_tokenize(body) if use_nltk else clean_text(body).split(' ')
     t3 = time.time() - start
     #print('{}\t{}\t{}'.format(t1, t2, t3))
     return result

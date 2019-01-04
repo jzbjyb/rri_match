@@ -116,12 +116,12 @@ def generate_train_test():
   save_train_test_file(test_samples, os.path.join(data_dir, 'test.pointwise'))
 
 
-def load_from_html_cascade(filename, binary=False):
+def load_from_html_cascade(filename, binary=False, field=['title', 'body']):
   try:
-    result = load_from_html(filename, binary=binary)
+    result = load_from_html(filename, binary=binary, field=field)
   except jpype.JException(java.lang.StackOverflowError) as e:
     logging.warn('boilerpipe exception: {}'.format(filename))
-    result = load_from_html(filename, use_boilerpipe=False, binary=binary)
+    result = load_from_html(filename, use_boilerpipe=False, binary=binary, field=field)
   return result
 
 
@@ -149,10 +149,10 @@ def preprocess(field='body'):
     count += 1
     if count % 10000 == 0:
       print('processed {}w docs'.format(count // 10000))
-    loaded_html = load_from_html_cascade(os.path.join(docs_dir, docid + '.html'), binary=binary)
+    loaded_html = load_from_html_cascade(os.path.join(docs_dir, docid + '.html'), binary=binary, field=[field])
     doc_dict[docid] = loaded_html[field]
     #print(docid)
-    #print(' '.join(doc_body))
+    #print(' '.join(doc_dict[docid]))
     #input()
     for term in doc_dict[docid]:
       vocab.add(term)
@@ -171,7 +171,7 @@ def preprocess(field='body'):
       if docid in doc_dict:
         doc_text = doc_dict[docid]
       else:
-        doc_text = load_from_html_cascade(os.path.join(docs_dir, docid + '.html'), binary=binary)[field]
+        doc_text = load_from_html_cascade(os.path.join(docs_dir, docid + '.html'), binary=binary, field=[field])[field]
       if len(doc_text) == 0:
         empty_docid.add(docid)
         continue
@@ -567,7 +567,11 @@ def gen_tfidf():
 
 if __name__ == '__main__':
   if args.action == 'prep':
-    preprocess()
+    '''
+    usage: python prep.py -a prep -d data_dir -m 50000 --binary_html
+    remember to set the field to be extracted.
+    '''
+    preprocess(field='title')
   elif args.action == 'gen':
     generate_train_test()
   elif args.action == 'w2v':
