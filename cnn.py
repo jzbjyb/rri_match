@@ -22,8 +22,8 @@ def mlp(x, architecture=[10], activation='relu'):
   return x
 
 
-def krnm(match_matrix, max_q_len, max_d_len, dq_size, input_mu, input_sigma, match_matrix_mask=None,
-  use_log=True, use_mlp=False):
+def knrm(match_matrix, max_q_len, max_d_len, dq_size, input_mu, input_sigma, match_matrix_mask=None,
+  use_log=True, use_mlp=False, sum_per_query=False):
   bs = tf.shape(match_matrix)[0]
   number_of_bin = len(input_mu) - 1
   mu = tf.constant(input_mu, dtype=tf.float32)
@@ -43,10 +43,17 @@ def krnm(match_matrix, max_q_len, max_d_len, dq_size, input_mu, input_sigma, mat
     # mask using other matrix
     match_matrix *= tf.expand_dims(match_matrix_mask, axis=-1)
   # sum
-  representation = tf.reduce_sum(match_matrix, axis=[1, 2])
+  if sum_per_query:
+    # first, sum over document terms
+    representation = tf.reduce_sum(match_matrix, axis=1)
+  else:
+    representation = tf.reduce_sum(match_matrix, axis=[1, 2])
   if use_log:
     # log is used in K-NRM
     representation = tf.log(1 + representation)
+  if sum_per_query:
+    # second, sum over query terms
+    representation = tf.reduce_sum(representation, axis=1) / 100 # scaling
   if use_mlp:
     # use a MLP to model interactions between evidence of different strength
     mlp_arch = [number_of_bin+1, number_of_bin+1]

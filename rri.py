@@ -2,7 +2,7 @@ import sys
 import tensorflow as tf
 import numpy as np
 from tensorflow.python.ops import variable_scope as vs
-from cnn import cnn, DynamicMaxPooling, mlp
+from cnn import cnn, DynamicMaxPooling, mlp, knrm
 from represent import cnn_rnn, cnn_text_rnn
 jumper = tf.load_op_library('./jumper.so')
 DELTA = 1e-5 # used to avoid dividing zero
@@ -190,6 +190,9 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
     state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta, 
       lambda: state_ta.write(0, tf.zeros([bs, number_of_bin+1], dtype=tf.float32)))
     print('mu: {}, sigma: {}'.format(input_mu, input_sigma))
+    representation = knrm(match_matrix, max_q_len, max_d_len, dq_size, input_mu, input_sigma,
+         match_matrix_mask=None, use_log=True, use_mlp=False, sum_per_query=True)
+    '''
     mu = tf.constant(input_mu, dtype=tf.float32)
     sigma = tf.constant(input_sigma, dtype=tf.float32)
     mu = tf.reshape(mu, [1, 1, 1, number_of_bin+1])
@@ -218,6 +221,7 @@ def get_representation(match_matrix, dq_size, query, query_emb, doc, doc_emb, wo
     #mlp_arch = [number_of_bin+1, number_of_bin+1]
     #print('use MLP with structure {}'.format(mlp_arch))
     #representation = mlp(representation, architecture=mlp_arch, activation='relu')
+    '''
   elif represent == 'sum_match_matrix_topk_weight_thre_kernel_hard':
     '''
     Use different kernels to first mask the match_matrix into several matrices. 

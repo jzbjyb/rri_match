@@ -5,7 +5,7 @@ from tensorflow.contrib.cudnn_rnn.python.ops.cudnn_rnn_ops import CudnnRNNTanh
 from tensorflow.contrib.cudnn_rnn import CudnnRNNRelu
 import numpy as np
 from basic_op import map_fn_concat
-from cnn import cnn, mlp, krnm
+from cnn import cnn, mlp, knrm
 dynamic_split = tf.load_op_library('./dynamic_split.so')
 
 def dynamic_split_multi_cpu(*args, stop_grad=True, **kwargs):
@@ -580,7 +580,7 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
         all_position=True, use_cudnn=kwargs['use_cudnn'], direction=kwargs['direction'],
         rnn_size=kwargs['rnn_size'], activation=kwargs['activation'], seq_seg=None, label='query ')
     else:
-      query_ngram = 2
+      query_ngram = 1
       if query_ngram == 1:
         print('=== query mlp (cnn with unigram) ===')
         query_piece_emb = mlp(tf.reshape(query_emb, [-1, emb_size]),
@@ -641,8 +641,8 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
     # match_matrix *= tf.expand_dims(tf.cast(
     #  match_matrix_for_decision > thres, dtype=match_matrix.dtype), axis=-1)
     # match_matrix *= tf.reshape(tf.cast(doc_decision, match_matrix.dtype), [bs, max_d_len, 1, 1])
-    representation = krnm(local_match_matrix, local_max_q_len, local_max_d_len, local_dq_size, input_mu, input_sigma,
-      match_matrix_mask=None, use_log=True, use_mlp=False)
+    representation = knrm(local_match_matrix, local_max_q_len, local_max_d_len, local_dq_size, input_mu, input_sigma,
+      match_matrix_mask=None, use_log=True, use_mlp=False, sum_per_query=True)
   if not use_combine:
     return state_ta, representation
   # combine with traditional KNRM
@@ -654,8 +654,8 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
     number_of_bin = len(input_mu)-1
     input_sigma =  [0.1] * number_of_bin + [0.00001]
     print('mu for KNRM: {}, sigma for KNRM: {}'.format(input_mu, input_sigma))
-    representation2 = krnm(match_matrix, max_q_len, max_d_len, dq_size, input_mu, input_sigma,
-      match_matrix_mask=None, use_log=True, use_mlp=False)
+    representation2 = knrm(match_matrix, max_q_len, max_d_len, dq_size, input_mu, input_sigma,
+      match_matrix_mask=None, use_log=True, use_mlp=False, sum_per_query=True)
   # combine two representations
   representation = tf.concat([representation, representation2], axis=1)
   return state_ta, representation
