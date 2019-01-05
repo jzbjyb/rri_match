@@ -1,7 +1,7 @@
 import tensorflow as tf
 from tensorflow.python.ops import variable_scope as vs
 import matplotlib.pyplot as plt
-import math
+import math, itertools
 import numpy as np
 from utils import printoptions
 
@@ -22,9 +22,77 @@ def mlp(x, architecture=[10], activation='relu'):
   return x
 
 
-def knrm(match_matrix, max_q_len, max_d_len, dq_size, input_mu, input_sigma, match_matrix_mask=None,
+def conv_knrm(query_emb, doc_emb, dq_size, input_mu, input_sigma, in_dim, out_dim, skip_input=False, use_norm=True,
+  match_matrix_mask=None, use_log=True, use_mlp=False, sum_per_query=False, query_ngram_list=[1], doc_ngram_list=[1]):
+  '''
+  When skip_input=True, unigram will not go through CNN layer.
+  '''
+  def get_ngram_cnn_vs_name(ngram):
+    if ngram == 1:
+      return 'UnigramCNN'
+    if ngram == 2:
+      return 'BigramCNN'
+    if ngram == 3:
+      return 'TrigramCNN'
+    raise ValueError('not supported ngram')
+  with vs.variable_scope('ConvKNRM'):
+    # first componenet: convolution
+    with vs.variable_scope('Conv'):
+      query_ngram_emb_list, doc_ngram_emb_list = [], []
+      for query_ngram in query_ngram_list:
+        vs_name = get_ngram_cnn_vs_name(query_ngram)
+        with vs.variable_scope(vs_name):
+          if skip_input and query_ngram == 1:
+            query_ngram_emb = query_emb
+          else:
+            query_ngram_emb = cnn(query_emb, architecture=[[query_ngram, in_dim, out_dim], [1]], activation='relu')
+          query_ngram_emb_list.append(query_ngram_emb)
+      for doc_ngram in doc_ngram_list:
+        vs_name = get_ngram_cnn_vs_name(doc_ngram)
+        with vs.variable_scope(vs_name):
+          if doc_ngram in query_ngram_list:
+            vs.get_variable_scope().reuse_variables()
+          if skip_input and doc_ngram == 1:
+            doc_ngram_emb = doc_emb
+          else:
+            doc_ngram_emb = cnn(doc_emb, architecture=[[doc_ngram, in_dim, out_dim], [1]], activation='relu')
+          doc_ngram_emb_list.append(doc_ngram_emb)
+    # second component: normalization (optional)
+    if use_norm:
+      print('use cosine normalization')
+      with vs.variable_scope('Normalization'):
+        for nel in [query_ngram_emb_list, doc_ngram_emb_list]:
+          for i, ne in enumerate(nel):
+            ne_norm = tf.sqrt(tf.reduce_sum(tf.square(ne), axis=2, keep_dims=True))
+            ne_norm += tf.cast(tf.equal(ne_norm, 0), dtype=tf.float32)
+            ne = ne / ne_norm
+            nel[i] = ne
+    # third component: interaction
+    with vs.variable_scope('Interaction'):
+      repr_list = []
+      for query_ngram_emb, doc_ngram_emb in itertools.product(query_ngram_emb_list, doc_ngram_emb_list):
+        ngram_match_matrix = tf.matmul(doc_ngram_emb, tf.transpose(query_ngram_emb, [0, 2, 1]))
+        representation = kernel_interaction(ngram_match_matrix, dq_size, input_mu, input_sigma,
+          match_matrix_mask=match_matrix_mask, use_log=use_log, use_mlp=use_mlp, sum_per_query=sum_per_query)
+        repr_list.append(representation)
+      return tf.concat(repr_list, axis=1)
+
+
+def knrm(query_emb, doc_emb, dq_size, input_mu, input_sigma, in_dim, out_dim, use_norm=True,
+  match_matrix_mask=None, use_log=True, use_mlp=False, sum_per_query=False):
+  '''
+  A special case of conv_knrm, where we only use unigram with skip_input=True.
+  '''
+  return conv_knrm(query_emb, doc_emb, dq_size, input_mu, input_sigma, in_dim, out_dim, skip_input=True,
+    use_norm=use_norm, match_matrix_mask=match_matrix_mask, use_log=use_log, use_mlp=use_mlp,
+    sum_per_query=sum_per_query, query_ngram_list=[1], doc_ngram_list=[1])
+
+
+def kernel_interaction(match_matrix, dq_size, input_mu, input_sigma, match_matrix_mask=None,
   use_log=True, use_mlp=False, sum_per_query=False):
   bs = tf.shape(match_matrix)[0]
+  max_d_len = tf.shape(match_matrix)[1]
+  max_q_len = tf.shape(match_matrix)[2]
   number_of_bin = len(input_mu) - 1
   mu = tf.constant(input_mu, dtype=tf.float32)
   sigma = tf.constant(input_sigma, dtype=tf.float32)
@@ -173,7 +241,7 @@ class DynamicMaxPooling(object):
     return np.array(index)
 
 
-def cnn(x, architecture=[(3, 3, 1, 16), (1, 2, 2, 1)], activation='relu', dpool_index=None):
+def cnn(x, architecture=[[3, 3, 1, 16], [1, 2, 2, 1]], activation='relu', dpool_index=None):
   if activation not in {None, 'relu', 'tanh', 'sigmoid'}:
     raise Exception('not supported activation')
   if len(architecture) <= 0 or len(architecture) % 2 != 0:

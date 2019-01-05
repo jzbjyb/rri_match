@@ -5,7 +5,7 @@ from tensorflow.contrib.cudnn_rnn.python.ops.cudnn_rnn_ops import CudnnRNNTanh
 from tensorflow.contrib.cudnn_rnn import CudnnRNNRelu
 import numpy as np
 from basic_op import map_fn_concat
-from cnn import cnn, mlp, knrm
+from cnn import cnn, mlp, kernel_interaction, conv_knrm, knrm
 dynamic_split = tf.load_op_library('./dynamic_split.so')
 
 def dynamic_split_multi_cpu(*args, stop_grad=True, **kwargs):
@@ -508,7 +508,7 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
   all_position = kwargs['all_position']
   time = kwargs['time']
   state_ta = kwargs['state_ta']
-  query_as_unigram = kwargs['query_as_unigram']
+  use_ngram = kwargs['use_ngram']
   rnn_size = kwargs['rnn_size']
   use_combine = kwargs['use_combine']
   print('no region selection: {}'.format(no_region_selection))
@@ -550,121 +550,50 @@ def cnn_text_rnn(match_matrix, dq_size, query, query_emb, doc, doc_emb, word_vec
     query_decision = tf.Print(query_decision, 
       [tf.reduce_mean(tf.reduce_sum(tf.cast(query_decision, tf.float32), axis=1))], 
       message='avg all query piece:')
-  with vs.variable_scope('RNNRegionRepresenter'):
-    def get_ngram_cnn_vs_name(ngram):
-      if ngram == 1:
-        return 'UnigramCNN'
-      if ngram == 2:
-        return 'BigramCNN'
-      if ngram == 3:
-        return 'TrigramCNN'
-      raise ValueError('not supported ngram')
-    use_doc_rnn = False
-    if False:
+  # use the same mu and sigma for all interactions
+  if 'input_mu' in kwargs and kwargs['input_mu'] != None:
+    input_mu = kwargs['input_mu']
+  else:
+    # input_mu = np.array(list(range(-20,20+1,1)))/20
+    input_mu = np.array(list(range(-10, 10 + 1, 2))) / 10
+  number_of_bin = len(input_mu) - 1
+  input_sigma = [0.1] * number_of_bin + [0.00001]
+  print('mu: {}, sigma: {}'.format(input_mu, input_sigma))
+  if use_ngram:
+    # cnn region representer
+    doc_ngram_list = [1, 2, 3]
+    query_ngram_list = [1, 2, 3]
+    print('doc ngram: {}, query ngram: {}'.format(doc_ngram_list, query_ngram_list))
+    representation = conv_knrm(query_emb, doc_emb, dq_size, input_mu, input_sigma, emb_size, rnn_size, skip_input=False,
+      use_norm=True, match_matrix_mask=None, use_log=True, use_mlp=False, sum_per_query=True,
+      query_ngram_list=query_ngram_list, doc_ngram_list=doc_ngram_list)
+  else:
+    # rnn region representer
+    with vs.variable_scope('RNNRegionRepresenter'):
       print('=== doc rnn ===')
-      use_doc_rnn = True
       doc_piece_emb, doc_piece_num = piece_rnn_with_bucket(
         doc_decision, doc_decision_value, doc, dq_size[0], word_vector, use_single=kwargs['use_single'], label='doc ',
         all_position=kwargs['all_position'], use_cudnn=kwargs['use_cudnn'], seq_seg=kwargs['doc_seg'],
         direction=kwargs['direction'], rnn_size=kwargs['rnn_size'], activation=kwargs['activation'])
-      #print('use rnn state exaggeration')
-      #doc_piece_emb *= 5.0
-    else:
-      doc_ngram = 3
-      doc_vs_name = get_ngram_cnn_vs_name(doc_ngram)
-      with vs.variable_scope(doc_vs_name):
-        print('=== doc {} ==='.format(doc_vs_name))
-        doc_piece_emb = cnn(doc_emb, architecture=[[doc_ngram, emb_size, rnn_size], [1]], activation='relu')
-        doc_piece_num = dq_size[0]
-    if not query_as_unigram:
       print('=== query rnn ===')
-      if use_doc_rnn:
-        # If doc is modeled using rnn, use the same parameter for query rnn.
-        vs.get_variable_scope().reuse_variables()
+      vs.get_variable_scope().reuse_variables() # use same parameters
       query_piece_emb, query_piece_num = piece_rnn_with_bucket(
         query_decision, query_decision_value, query, dq_size[1], word_vector, use_single=True,
         all_position=True, use_cudnn=kwargs['use_cudnn'], direction=kwargs['direction'],
         rnn_size=kwargs['rnn_size'], activation=kwargs['activation'], seq_seg=None, label='query ')
-    else:
-      query_ngram = 3
-      query_vs_name = get_ngram_cnn_vs_name(query_ngram)
-      with vs.variable_scope(query_vs_name):
-        if doc_ngram == query_ngram:
-          print('reuse {} parameter'.format(query_vs_name))
-          vs.get_variable_scope().reuse_variables()
-        print('=== query {} ==='.format(query_vs_name))
-        query_piece_emb = cnn(query_emb, architecture=[[query_ngram, emb_size, rnn_size], [1]], activation='relu')
-        query_piece_num = dq_size[1]
-      '''
-      print('=== query mlp (cnn with unigram) ===')
-      query_piece_emb = mlp(tf.reshape(query_emb, [-1, emb_size]),
-        architecture=[kwargs['rnn_size']], activation='relu')
-      query_piece_emb = tf.reshape(query_piece_emb, [bs, max_q_len, rnn_size])
-      #query_piece_emb = query_emb
-      query_piece_num = dq_size[1]
-      '''
-  with vs.variable_scope('KNRMAggregator'):
-    if True:
-      print('use cosine normalization')
-      doc_emb_norm = tf.sqrt(tf.reduce_sum(tf.square(doc_piece_emb), axis=2, keep_dims=True))
-      doc_emb_norm += tf.cast(tf.equal(doc_emb_norm, 0), dtype=tf.float32)
-      #doc_emb_norm = tf.minimum(tf.maximum(doc_emb_norm, 1), 2)
-      query_emb_norm = tf.sqrt(tf.reduce_sum(tf.square(query_piece_emb), axis=2, keep_dims=True))
-      query_emb_norm += tf.cast(tf.equal(query_emb_norm, 0), dtype=tf.float32)
-      #query_emb_norm = tf.minimum(tf.maximum(query_emb_norm, 1), 2)
-      doc_piece_emb = doc_piece_emb / doc_emb_norm
-      query_piece_emb = query_piece_emb / query_emb_norm
-    local_match_matrix = tf.matmul(doc_piece_emb, tf.transpose(query_piece_emb, [0, 2, 1]))
-    local_max_q_len = tf.shape(query_piece_emb)[1]
-    local_max_d_len = tf.shape(doc_piece_emb)[1]
-    local_dq_size = tf.stack([doc_piece_num, query_piece_num], axis=0)
-    if 'input_mu' in kwargs and kwargs['input_mu'] != None:
-        input_mu = kwargs['input_mu']
-    else:
-        #input_mu = np.array(list(range(-20,20+1,1)))/20
-        input_mu = np.array(list(range(-10, 10 + 1, 2))) / 10
-    number_of_bin = len(input_mu)-1
-    #input_sigma =  [0.025] * number_of_bin + [0.025]
-    input_sigma = [0.1] * number_of_bin + [0.00001]
-    if not use_combine:
-      state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta,
-        lambda: state_ta.write(0, tf.zeros([bs, number_of_bin+1], dtype=tf.float32)))
-    else:
-      #state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta,
-      #  lambda: state_ta.write(0, tf.zeros([bs, 2 * (number_of_bin + 1)], dtype=tf.float32)))
-      state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta,
-        lambda: state_ta.write(0, tf.zeros([bs, 11 + (number_of_bin + 1)], dtype=tf.float32)))
-    print('mu: {}, sigma: {}'.format(input_mu, input_sigma))
-    '''
-    if all_position:
-      # only use the corresponding query and document term
-      piece_num = tf.reduce_sum(tf.cast(doc_decision, dtype=tf.int32), axis=1)
-      # SHAPE: (None, max_q_len)
-      match_matrix_for_decision = tf.boolean_mask(match_matrix_for_decision, doc_decision)
-      # SHAPE: (batch_size, padded_len, max_q_len)
-      match_matrix_for_decision = dynamic_split_continuous_multi_cpu(match_matrix_for_decision, piece_num)
-      decision_mask = tf.expand_dims(tf.cast(match_matrix_for_decision > thres,
-        dtype=match_matrix.dtype), axis=-1)
-      decision_mask = tf.stop_gradient(decision_mask)
-    '''
-    # match_matrix *= tf.expand_dims(tf.cast(
-    #  match_matrix_for_decision > thres, dtype=match_matrix.dtype), axis=-1)
-    # match_matrix *= tf.reshape(tf.cast(doc_decision, match_matrix.dtype), [bs, max_d_len, 1, 1])
-    representation = knrm(local_match_matrix, local_max_q_len, local_max_d_len, local_dq_size, input_mu, input_sigma,
-      match_matrix_mask=None, use_log=True, use_mlp=False, sum_per_query=True)
+      representation = knrm(query_piece_emb, doc_piece_emb, tf.stack([doc_piece_num, query_piece_num], axis=0),
+        input_mu, input_sigma, emb_size, rnn_size, use_norm=True, match_matrix_mask=None, use_log=True,
+        use_mlp=False, sum_per_query=True)
   if not use_combine:
+    state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta,
+      lambda: state_ta.write(0, tf.zeros_like(representation)))
     return state_ta, representation
   # combine with traditional KNRM
   with vs.variable_scope('KNRM'):
-    if 'input_mu' in kwargs and kwargs['input_mu'] != None:
-        input_mu = kwargs['input_mu']
-    else:
-        input_mu = np.array(list(range(-10,10+1,2)))/10
-    number_of_bin = len(input_mu)-1
-    input_sigma =  [0.1] * number_of_bin + [0.00001]
-    print('mu for KNRM: {}, sigma for KNRM: {}'.format(input_mu, input_sigma))
-    representation2 = knrm(match_matrix, max_q_len, max_d_len, dq_size, input_mu, input_sigma,
+    representation2 = kernel_interaction(match_matrix, dq_size, input_mu, input_sigma,
       match_matrix_mask=None, use_log=True, use_mlp=False, sum_per_query=True)
   # combine two representations
   representation = tf.concat([representation, representation2], axis=1)
+  state_ta = tf.cond(tf.greater(time, 0), lambda: state_ta,
+    lambda: state_ta.write(0, tf.zeros_like(representation)))
   return state_ta, representation
