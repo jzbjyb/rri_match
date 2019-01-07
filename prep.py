@@ -1,4 +1,4 @@
-import os, argparse, logging, jpype, random, gzip, shutil, zlib
+import os, argparse, logging, jpype, random, gzip, shutil, zlib, multiprocessing, signal, time
 from collections import defaultdict
 from itertools import groupby
 import numpy as np
@@ -7,13 +7,16 @@ import tensorflow as tf
 from sklearn.feature_extraction.text import TfidfVectorizer
 from utils import Vocab, WordVector, load_from_html, load_from_query_file, load_train_test_file, \
   save_train_test_file, load_judge_file, load_run_file, load_query_log, save_judge_file, \
-  save_query_file, load_prep_file, load_prep_file_aslist, save_prep_file
+  save_query_file, load_prep_file, load_prep_file_aslist, save_prep_file, word_segment, qc_xml_field_line_map, \
+  load_boilerpipe
 from config import CONFIG
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser(description='preprocess')
   parser.add_argument('-a', '--action', help='action', type=str, default=None)
   parser.add_argument('-m', '--max_vocab_size', help='max vocabulary size', type=int, default=50000)
+  parser.add_argument('-t', '--num_thread', help='number of threads', type=int, default=8)
+  parser.add_argument('--line_count', help='number of lines of a file', type=int, default=None)
   parser.add_argument('-d', '--data_dir', help='data directory', type=str)
   parser.add_argument('-l', '--query_log', help='the filepath of query log', type=str)
   parser.add_argument('-r', '--train_test_ratio', help='the ratio of train and test dataset',
@@ -126,6 +129,7 @@ def load_from_html_cascade(filename, binary=False, field=['title', 'body']):
 
 
 def preprocess(field='body'):
+  load_boilerpipe()
   binary = args.binary_html
   data_dir = args.data_dir
   max_vocab_size = args.max_vocab_size
@@ -565,6 +569,51 @@ def gen_tfidf():
       for i,q in enumerate(query_raw)])
 
 
+def multi_qc_xml_field_line_map(arg):
+  xml_file, field, map_fn, ind, start, end = arg
+  qc_xml_field_line_map(xml_file, field, map_fn, ind, start, end)
+
+
+def xml_map_fn(text):
+  words = []
+  for w in word_segment(text):
+    w = w.strip()
+    if w.find(' ') != -1:
+      print(w)
+      #input()
+    if len(w) > 0:
+      words.append(w)
+  return ' '.join(words)
+
+
+def word_seg():
+  xml_file = os.path.join(args.data_dir, 'qd.xml') # xml file in sogou-qcl format
+  if args.line_count is not None:
+    num_lines = args.line_count
+  else:
+    num_lines = sum(1 for l in open(xml_file, 'r'))
+  print('num lines {}'.format(num_lines))
+  batch_size = int(np.ceil(num_lines / args.num_thread))
+  # controllable pool
+  original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+  pool = multiprocessing.Pool(args.num_thread)
+  signal.signal(signal.SIGINT, original_sigint_handler)
+  try:
+    print('starting {} jobs'.format(args.num_thread))
+    res = pool.map_async(multi_qc_xml_field_line_map, [(xml_file, ('<query>', '<title>', '<content>'), xml_map_fn,
+        i, i * batch_size, i * batch_size + batch_size) for i in range(args.num_thread)])
+    print('waiting for results')
+    res.get(9999999)  # without the timeout this blocking call ignores all signals.
+  except KeyboardInterrupt:
+    print('caught KeyboardInterrupt, terminating workers')
+    pool.terminate()
+  else:
+    print('normal termination')
+    pool.close()
+  print('start joining')
+  pool.join()
+
+
 if __name__ == '__main__':
   if args.action == 'prep':
     '''
@@ -614,5 +663,20 @@ if __name__ == '__main__':
   elif args.action == 'gen_tfidf':
     # generate tfidf-like dataset in which each document is a bow with tfidf as weights.
     gen_tfidf()
+  elif args.action == 'word_seg':
+    word_seg()
+  elif args.action == 'recover':
+    cache_line = []
+    with open('data/sogou_qcl_08/qd.xml.seg', 'r') as fin, open('data/sogou_qcl_08/qd.xml.seg.recover', 'w') as fout:
+      for i, l in enumerate(fin):
+        if not l.lstrip().startswith('<'):
+          print(i)
+          cache_line[-1] = cache_line[-1].rstrip('\n') + ' '
+        cache_line.append(l)
+        if len(cache_line) >= 2:
+          fout.write(cache_line[0])
+          cache_line = cache_line[1:]
+      for l in cache_line:
+        fout.write(l)
   else:
     raise NotImplementedError('action not supported')

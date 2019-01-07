@@ -1,10 +1,11 @@
-import contextlib, sys, re, logging, time, html
+import contextlib, sys, re, logging, time, html, jieba
 from collections import defaultdict
 import numpy as np
 import tensorflow as tf
 from sklearn.decomposition import TruncatedSVD
 from bs4 import BeautifulSoup, UnicodeDammit
-from boilerpipe.extract import Extractor
+from xml.etree import ElementTree
+import xml.etree.ElementTree
 from nltk.tokenize import word_tokenize
 
 
@@ -25,6 +26,54 @@ def printoptions(*args, **kwargs):
         yield
     finally:
         np.set_printoptions(**original)
+
+
+def qc_xml_field_line_map(filepath, field=None, map_fn=lambda x:x, ind=None, start=None, end=None):
+    '''
+    Iterate through the file line by line and map the selected lines.
+    '''
+    if ind is not None:
+        out_filepath = '{}.{}{}'.format(filepath, 'seg', ind)
+    else:
+        out_filepath = '{}.{}'.format(filepath, 'seg')
+    with open(filepath, 'r') as fin, open(out_filepath, 'w') as fout:
+        for i, l in enumerate(fin):
+            if ind is not None and i < start:
+                continue
+            if ind is not None and i >= end:
+                break
+            if i % 500000 == 0:
+                print('{}w'.format(i//10000))
+            if type(field) is tuple and l.lstrip().startswith(field):
+                start_ind = l.find('>') + 1
+                end_ind = l.rfind('</')
+                prefix = l[:start_ind]
+                suffix = l[end_ind:]
+                #ele = xml.etree.ElementTree.fromstring(l)
+                #ele.text = map_fn(ele.text)
+                #l = prefix + ElementTree.tostring(ele, encoding='utf-8', method='xml').decode('utf-8') + '\n'
+                l = prefix + map_fn(l[start_ind:end_ind]) + suffix
+            fout.write(l)
+
+
+def qd_xml_iterator(filepath):
+    '''
+    Iterate over <q></q> objects and return one at a time.
+    '''
+    with open(filepath, 'r') as fin:
+        lines = []
+        for l in fin:
+            if l.startswith('<q>'):
+                lines = [l]
+            elif l.startswith('</q>'):
+                lines.append(l)
+                yield xml.etree.ElementTree.fromstring(''.join(lines))
+            else:
+                lines.append(l)
+
+
+def word_segment(text):
+    return list(jieba.cut(text, cut_all=False))
 
 
 def tf_jacobian(y_flat, x):
@@ -236,6 +285,10 @@ def my_word_tokenize(text):
     text = re.sub(r'\s+', ' ', text, flags=re.UNICODE).lower()
     text = word_tokenize(text) # time consuming
     return text
+
+
+def load_boilerpipe():
+    from boilerpipe.extract import Extractor
 
 
 def load_from_html(filename, use_boilerpipe=True, use_nltk=True, use_regex=True,
