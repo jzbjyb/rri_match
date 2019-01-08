@@ -1,11 +1,12 @@
-import contextlib, sys, re, logging, time, html, jieba
+import contextlib, sys, re, logging, time, html, jieba, json
 from collections import defaultdict
 import numpy as np
 import tensorflow as tf
 from sklearn.decomposition import TruncatedSVD
 from bs4 import BeautifulSoup, UnicodeDammit
 from xml.etree import ElementTree
-import xml.etree.ElementTree
+import xml.etree.ElementTree as ET
+from lxml import etree
 from nltk.tokenize import word_tokenize
 
 
@@ -49,17 +50,57 @@ def qc_xml_field_line_map(filepath, field=None, map_fn=lambda x:x, ind=None, sta
                 end_ind = l.rfind('</')
                 prefix = l[:start_ind]
                 suffix = l[end_ind:]
-                #ele = xml.etree.ElementTree.fromstring(l)
+                #ele = ET.fromstring(l)
                 #ele.text = map_fn(ele.text)
                 #l = prefix + ElementTree.tostring(ele, encoding='utf-8', method='xml').decode('utf-8') + '\n'
                 l = prefix + map_fn(l[start_ind:end_ind]) + suffix
             fout.write(l)
 
 
+def parse_sogou_qcl_one_qd(lines):
+    struct = ('q', ['query', 'query_frequency', 'query_id',
+                    ('doc', ['url', 'doc_id', 'title', 'content', 'html', 'doc_frequency',
+                             ('relevance', ['TCM', 'DBN', 'PSCM', 'TACM', 'UBM'])])])
+    def recursive_parse(lines, start, struct, result):
+        i = start
+        while True:
+            if i >= len(lines):
+                break
+            if lines[i].strip() != '<{}>'.format(struct[0]):
+                break
+            one_result = {}
+            i += 1
+            for j, tag in enumerate(struct[1]):
+                if type(tag) is str:
+                    line = lines[i].strip()
+                    # parse
+                    if not line.startswith('<{}>'.format(tag)) or not line.endswith('</{}>'.format(tag)):
+                        print(lines[i])
+                        raise Exception('parse error')
+                    one_result[tag] = line[line.find('>')+1:line.rfind('<')]
+                    i += 1
+                elif type(tag) is tuple:
+                    # go deep
+                    recursive_result = []
+                    one_result[tag[0]] = recursive_result
+                    i = recursive_parse(lines, i, tag, recursive_result)
+            if lines[i].strip() != '</{}>'.format(struct[0]):
+                print(lines[i])
+                raise Exception('parse error')
+            result.append(one_result)
+            i += 1
+        return i
+    result = []
+    recursive_parse(lines, 0, struct, result)
+    return result
+
+
 def qd_xml_iterator(filepath):
     '''
     Iterate over <q></q> objects and return one at a time.
     '''
+    #parser = ET.XMLParser(encoding="utf-8")
+    #parser = etree.XMLParser(recover=True)
     with open(filepath, 'r') as fin:
         lines = []
         for l in fin:
@@ -67,7 +108,12 @@ def qd_xml_iterator(filepath):
                 lines = [l]
             elif l.startswith('</q>'):
                 lines.append(l)
-                yield xml.etree.ElementTree.fromstring(''.join(lines))
+                #yield ET.fromstring(''.join(lines), parser=parser)
+                #yield etree.fromstring(''.join(lines), parser=parser)
+                qd = parse_sogou_qcl_one_qd(lines)
+                #with open('test.json', 'w') as outfile:
+                #    json.dump(qd, outfile, indent=True, ensure_ascii=False)
+                yield qd[0]
             else:
                 lines.append(l)
 

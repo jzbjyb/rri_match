@@ -8,7 +8,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from utils import Vocab, WordVector, load_from_html, load_from_query_file, load_train_test_file, \
   save_train_test_file, load_judge_file, load_run_file, load_query_log, save_judge_file, \
   save_query_file, load_prep_file, load_prep_file_aslist, save_prep_file, word_segment, qc_xml_field_line_map, \
-  load_boilerpipe
+  load_boilerpipe, qd_xml_iterator
 from config import CONFIG
 
 if __name__ == '__main__':
@@ -586,7 +586,7 @@ def xml_map_fn(text):
   return ' '.join(words)
 
 
-def word_seg():
+def xml_word_seg():
   xml_file = os.path.join(args.data_dir, 'qd.xml') # xml file in sogou-qcl format
   if args.line_count is not None:
     num_lines = args.line_count
@@ -612,6 +612,74 @@ def word_seg():
     pool.close()
   print('start joining')
   pool.join()
+
+
+def xml_prep(field='body', relevance='TACM'):
+  train_file = os.path.join(args.data_dir, 'qd.xml.seg.train')
+  test_file = os.path.join(args.data_dir, 'qd.xml.seg.test')
+  max_vocab_size = args.max_vocab_size
+  train_word_file = os.path.join(args.data_dir, 'train.pointwise')
+  test_word_file = os.path.join(args.data_dir, 'test.pointwise')
+  train_prep_file = os.path.join(args.data_dir, 'train.prep.pointwise')
+  test_prep_file = os.path.join(args.data_dir, 'test.prpe.pointwise')
+  vocab_file = os.path.join(args.data_dir, 'vocab')
+  if field == 'body':
+    field_in_xml = 'content'
+  elif field == 'title':
+    field_in_xml = 'title'
+  print('build vocab ...')
+  vocab = Vocab(max_size=max_vocab_size)
+  for i, qd in enumerate(qd_xml_iterator(train_file)):
+    '''
+    query = qd.find('./query').text
+    words = query.split(' ')
+    for doc in qd.findall('./doc/{}'.format(field_in_xml)):
+      words.extend(doc.text.split(' '))
+    '''
+    if i % 10000 == 0:
+      print('{}w'.format(i//10000))
+    query = qd['query']
+    words = query.split(' ')
+    for doc in qd['doc']:
+      words.extend(doc[field_in_xml].split(' '))
+    for w in words:
+      vocab.add(w)
+  vocab.build()
+  vocab.save_to_file(vocab_file)
+  for from_file, word_file, prep_file in \
+    [(train_file, train_word_file, train_prep_file), (test_file, test_word_file, test_prep_file)]:
+    print('generate {}'.format(prep_file))
+    count_q, count_d = 0, 0
+    with open(prep_file, 'w') as prep_f:
+      for i, qd in enumerate(qd_xml_iterator(from_file)):
+        '''
+        qid = qd.find('./query_id').text
+        query = qd.find('./query').text
+        '''
+        qid = qd['query_id']
+        query = qd['query']
+        if len(query.strip()) == 0:
+          continue
+        count_q += 1
+        query = vocab.encode(query.split(' '))
+        query = ' '.join(map(str, query))
+        #for doc in qd.findall('./doc'):
+        for doc in qd['doc']:
+          '''
+          docid = doc.find('./doc_id').text
+          doc_text = doc.find('./{}'.format(field_in_xml)).text
+          label = doc.find('./relevance/{}'.format(relevance)).text
+          '''
+          docid = doc['doc_id']
+          doc_text = doc[field_in_xml]
+          label = doc['relevance'][0][relevance]
+          if len(doc_text.strip()) == 0:
+            continue
+          count_d += 1
+          doc_text = vocab.encode(doc_text.split(' '))
+          doc_text = ' '.join(map(str, doc_text))
+          prep_f.write('{}\t{}\t{}\t{}\t{}\n'.format(qid, docid, label, query, doc_text))
+      print('totally {} queries, {} docs'.format(count_q, count_d))
 
 
 if __name__ == '__main__':
@@ -663,11 +731,22 @@ if __name__ == '__main__':
   elif args.action == 'gen_tfidf':
     # generate tfidf-like dataset in which each document is a bow with tfidf as weights.
     gen_tfidf()
-  elif args.action == 'word_seg':
-    word_seg()
+  elif args.action == 'xml_word_seg':
+    '''
+    usage: python prep.py -a xml_word_seg -d data_dir --line_count line_count -t 4
+    remember that the line_count given by `wc -l` might be different that give by python.
+    '''
+    xml_word_seg()
+  elif args.action == 'xml_prep':
+    '''
+    usage: python prep.py -a xml_prep -d data_dir --max_vocab_size 100000
+    remember to modify the field and relevance.
+    '''
+    xml_prep(field='title', relevance='TACM')
   elif args.action == 'recover':
     cache_line = []
-    with open('data/sogou_qcl_08/qd.xml.seg', 'r') as fin, open('data/sogou_qcl_08/qd.xml.seg.recover', 'w') as fout:
+    with open('data/sogou_qcl_08/qd.xml.seg', 'r') as fin, \
+      open('data/sogou_qcl_08/qd.xml.seg.recover', 'w') as fout:
       for i, l in enumerate(fin):
         if not l.lstrip().startswith('<'):
           print(i)
