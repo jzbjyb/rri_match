@@ -8,7 +8,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from utils import Vocab, WordVector, load_from_html, load_from_query_file, load_train_test_file, \
   save_train_test_file, load_judge_file, load_run_file, load_query_log, save_judge_file, \
   save_query_file, load_prep_file, load_prep_file_aslist, save_prep_file, word_segment, qc_xml_field_line_map, \
-  load_boilerpipe, qd_xml_iterator
+  load_boilerpipe, qd_xml_iterator, prep_file_iterator, prep_file_mapper, PointwiseSample
 from config import CONFIG
 
 if __name__ == '__main__':
@@ -31,6 +31,8 @@ if __name__ == '__main__':
   parser.add_argument('-f', '--format', help='format of input data. \
     "ir" for original format and "text" for new text matching format', type=str, default='ir')
   parser.add_argument('--reverse', help='whether to reverse the pairs in training testing files', 
+    action='store_true')
+  parser.add_argument('--use_stream', help='whether to use streaming algorithm',
     action='store_true')
   parser.add_argument('--binary_html', help='whether to read html in binary', action='store_true')
   parser.add_argument('--gzip_files', help='filepath of gzip files', type=str)
@@ -270,6 +272,42 @@ def filter_query():
           os.path.join(data_dir, 'query'))
 
 
+def click_model_to_rel():
+  train_file = os.path.join(args.data_dir, 'train.prep.pointwise')
+  test_file = os.path.join(args.data_dir, 'test.prep.pointwise')
+  train_click = load_judge_file(train_file, scale=float)
+  clicks = []
+  for q in train_click:
+    for d in train_click[q]:
+      clicks.append(train_click[q][d])
+  clicks = sorted(clicks)
+  ratio = [(0, 0.8), (1, 0.95), (2, 1)] # the cumulative distribution of relevance label
+  threshold = []
+  k = 0
+  last = '#'
+  for i in range(len(clicks)):
+    while i / len(clicks) >= ratio[k][1]:
+      k += 1
+    if last != '#' and last[0] != ratio[k][0]:
+      threshold.append(last)
+    last = [ratio[k][0], clicks[i]]
+  threshold.append(last)
+  print('ratio: {}'.format(ratio))
+  print('threshold: {}'.format(threshold))
+  #threshold = [[0, 0.05], [1, 0.3], [2, 1]]  # my guess
+  def click2rel(click):
+    k = 0
+    while click > threshold[k][1]:
+      k += 1
+    return threshold[k][0]
+  # save
+  def map_fn(sample):
+    nonlocal click2rel
+    return PointwiseSample(sample.qid, sample.docid, click2rel(sample.label), sample.query, sample.doc)
+  prep_file_mapper(train_file, train_file + '.rel', method='sample', func=float, map_fn=map_fn)
+  prep_file_mapper(test_file, test_file + '.rel', method='sample', func=float, map_fn=map_fn)
+
+
 def click_to_rel():
   data_dir = args.data_dir
   judge_click = os.path.join(data_dir, 'judgement_DCTR')
@@ -407,11 +445,40 @@ def handle_windows():
   print('total: {}'.format(count))
 
 
+def gen_pairwise_stream(score_diff_thres=0):
+  train_pointwise = os.path.join(args.data_dir, 'train.prep.pointwise')
+  test_pointwise = os.path.join(args.data_dir, 'test.prep.pointwise')
+  for fn in [train_pointwise, test_pointwise]:
+    fn_out = fn.rsplit('.', 1)[0] + '.pairwise'
+    pointwise_count = 0
+    pairwise_count = 0
+    with open(fn_out, 'w') as fout:
+      for samples in prep_file_iterator(fn, method='query', func=float, parse=False):
+        for i in range(len(samples)):
+          for j in range(i+1, len(samples)):
+            if samples[i].label >= samples[j].label:
+              s1 = samples[i]
+              s2 = samples[j]
+            else:
+              s1 = samples[j]
+              s2 = samples[i]
+            if s1.qid != s2.qid:
+              print('!')
+              print(s1, s2)
+              input()
+            if s1.label - s2.label > score_diff_thres:
+              pairwise_count += 1
+              fout.write('{}\t{}\t{}\t{}\t{}\t{}\t{}\n'.format(
+                s1.qid, s1.docid, s2.docid, s1.label - s2.label, s1.query, s1.doc, s2.doc))
+        pointwise_count += len(samples)
+    print('from {} samples to {} samples in {}'.format(pointwise_count, pairwise_count, fn_out))
+
+
 def gen_pairwise():
   train_pointwise = os.path.join(args.data_dir, 'train.prep.pointwise')
   test_pointwise = os.path.join(args.data_dir, 'test.prep.pointwise')
   for fn in [train_pointwise, test_pointwise]:
-    fn_out = fn.rsplit('.', 1)[0] + '.pairwise'    
+    fn_out = fn.rsplit('.', 1)[0] + '.pairwise'
     samples = load_train_test_file(fn, file_format=args.format, reverse=args.reverse)
     samples_gb_q = groupby(samples, lambda x: x[0])
     with open(fn_out, 'w') as fout:
@@ -429,7 +496,57 @@ def gen_pairwise():
         #  q, len(q_samples), count, count/(len(q_samples) or 1)))
         all_pointwise += len(q_samples)
         all_pairwise += count
-      print('from {} to {} in {}'.format(all_pointwise, all_pairwise, fn_out))
+      print('from {} samples to {} samples in {}'.format(all_pointwise, all_pairwise, fn_out))
+
+
+def gen_tfrecord_stream():
+  # number of tfrecord file to save
+  num_shards = 1
+  print('use {} shards'.format(num_shards))
+  def _pick_output_shard():
+    return random.randint(0, num_shards-1)
+  train_filename = os.path.join(args.data_dir, 'train.prep.{}'.format(args.paradigm))
+  test_filename = os.path.join(args.data_dir, 'test.prep.{}'.format(args.paradigm))
+  for fn in [train_filename, test_filename]:
+    print('convert "{}" ...'.format(fn))
+    output_file = fn + '.tfrecord'
+    writers = []
+    for i in range(num_shards):
+      writers.append(tf.python_io.TFRecordWriter(
+        '%s-%03i-of-%03i' % (output_file, i, num_shards)))
+    for i, sample in enumerate(prep_file_iterator(fn, method='sample', func=float, parse=True)):
+      if i % 100000 == 0:
+        print('{}w'.format(i // 10000))
+      features = {}
+      if args.paradigm == 'pointwise':
+        q, d = sample.qid, sample.docid
+        qb = q.encode('utf-8')
+        db = d.encode('utf-8')
+        features['docid'] = tf.train.Feature(bytes_list=tf.train.BytesList(value=[db]))
+        features['doc'] = tf.train.Feature(int64_list=tf.train.Int64List(value=sample.doc))
+        features['doclen'] = tf.train.Feature(
+          int64_list=tf.train.Int64List(value=[len(sample.doc)]))
+      elif args.paradigm == 'pairwise':
+        q, d1, d2, = sample.qid, sample.docid1, sample.docid2
+        qb = q.encode('utf-8')
+        d1b = d1.encode('utf-8')
+        d2b = d2.encode('utf-8')
+        features['docid1'] = tf.train.Feature(bytes_list=tf.train.BytesList(value=[d1b]))
+        features['docid2'] = tf.train.Feature(bytes_list=tf.train.BytesList(value=[d2b]))
+        features['doc1'] = tf.train.Feature(int64_list=tf.train.Int64List(value=sample.doc1))
+        features['doc2'] = tf.train.Feature(int64_list=tf.train.Int64List(value=sample.doc2))
+        features['doc1len'] = tf.train.Feature(
+          int64_list=tf.train.Int64List(value=[len(sample.doc1)]))
+        features['doc2len'] = tf.train.Feature(
+          int64_list=tf.train.Int64List(value=[len(sample.doc2)]))
+      features['qid'] = tf.train.Feature(bytes_list=tf.train.BytesList(value=[qb]))
+      features['query'] = tf.train.Feature(int64_list=tf.train.Int64List(value=sample.query))
+      features['label'] = tf.train.Feature(float_list=tf.train.FloatList(value=[sample.label]))
+      features['qlen'] = tf.train.Feature(int64_list=tf.train.Int64List(value=[len(sample.query)]))
+      f = tf.train.Features(feature=features)
+      example = tf.train.Example(features=f)
+      # randomly choose a shard to save the example
+      writers[_pick_output_shard()].write(example.SerializeToString())
 
 
 def gen_tfrecord(bow=False, segmentation=False):
@@ -621,7 +738,7 @@ def xml_prep(field='body', relevance='TACM'):
   train_word_file = os.path.join(args.data_dir, 'train.pointwise')
   test_word_file = os.path.join(args.data_dir, 'test.pointwise')
   train_prep_file = os.path.join(args.data_dir, 'train.prep.pointwise')
-  test_prep_file = os.path.join(args.data_dir, 'test.prpe.pointwise')
+  test_prep_file = os.path.join(args.data_dir, 'test.prep.pointwise')
   vocab_file = os.path.join(args.data_dir, 'vocab')
   if field == 'body':
     field_in_xml = 'content'
@@ -706,6 +823,11 @@ if __name__ == '__main__':
     shuqi_bing_redirect()
   elif args.action == 'click_to_rel':
     click_to_rel()
+  elif args.action == 'click_model_to_rel':
+    '''
+    usage: python prep.py -a click_model_to_rel -d data_dir
+    '''
+    click_model_to_rel()
   elif args.action == 'filter_judgement':
     filter_judgement()
   elif args.action == 'find_gzip':
@@ -716,15 +838,22 @@ if __name__ == '__main__':
     handle_windows()
   elif args.action == 'gen_pairwise':
     '''
-    usage: python prep.py -a gen_pairwise -d data_dir -f text --reverse
+    usage: python prep.py -a gen_pairwise -d data_dir [-f text --reverse --use_stream]
+    remember to set score_diff_thres.
     '''
-    gen_pairwise()
+    if args.use_stream:
+      gen_pairwise_stream(score_diff_thres=0.1)
+    else:
+      gen_pairwise()
   elif args.action == 'gen_tfrecord':
     '''
-    usage: python prep.py -a gen_tfrecord -d data_dir -f text -p pointwise
-    remember to modify the bow parameter.
+    usage: python prep.py -a gen_tfrecord -d data_dir -f text -p pointwise [--use_stream]
+    remember to modify the bow and segmentation parameter.
     '''
-    gen_tfrecord(bow=False, segmentation=True)
+    if args.use_stream:
+      gen_tfrecord_stream()
+    else:
+      gen_tfrecord(bow=False, segmentation=True)
   elif args.action == 'drop_negative':
     # random drop some negative samples to make training balanced
     drop_negative()

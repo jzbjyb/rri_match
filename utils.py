@@ -1,5 +1,6 @@
 import contextlib, sys, re, logging, time, html, jieba, json
 from collections import defaultdict
+from collections import namedtuple
 import numpy as np
 import tensorflow as tf
 from sklearn.decomposition import TruncatedSVD
@@ -8,6 +9,10 @@ from xml.etree import ElementTree
 import xml.etree.ElementTree as ET
 from lxml import etree
 from nltk.tokenize import word_tokenize
+
+
+PointwiseSample = namedtuple('PointwiseSample', 'qid docid label query doc')
+PairwiseSample = namedtuple('PairwiseSample', 'qid docid1 docid2 label query doc1 doc2')
 
 
 class NullContextManager(object):
@@ -160,9 +165,9 @@ def load_judge_file(filepath, scale=int, file_format='ir', reverse=False):
     with open(filepath, 'r') as fp:
         for l in fp:
             if file_format == 'ir':
-                q, d, r = l.rstrip().split('\t')
+                q, d, r = l.rstrip().split('\t')[:3]
             elif file_format == 'text':
-                r, q, d = l.rstrip().split(' ')
+                r, q, d = l.rstrip().split(' ')[:3]
             r = scale(r)
             if reverse:
                 qd_judge[d][q] = r
@@ -240,6 +245,72 @@ def load_prep_file(filepath, file_format='ir', func=int):
             else:
                 raise Exception()
     return result
+
+
+def prep_file_mapper(filepath, out_filepath, method='sample', func=int, map_fn=lambda x: x):
+    if filepath.endswith('pointwise'):
+        mode = 1
+    elif filepath.endswith('pairwise'):
+        mode = 2
+    else:
+        raise ValueError('not supported')
+    with open(out_filepath, 'w') as fout:
+        for samples in prep_file_iterator(filepath, method=method, func=func, parse=False):
+            samples = map_fn(samples)
+            if type(samples) != list:
+                samples = [samples]
+            for sample in samples:
+                if mode == 1:
+                    fout.write('{}\t{}\t{}\t{}\t{}\n'.format(
+                        sample.qid, sample.docid, sample.label,
+                        sample.query, sample.doc))
+                elif mode == 2:
+                    fout.write('{}\t{}\t{}\t{}\t{}\t{}\t{}\n'.format(
+                        sample.qid, sample.docid1, sample.docid2, sample.label,
+                        sample.query, sample.doc1, sample.doc2))
+
+
+def prep_file_iterator(filepath, method='sample', func=int, parse=False):
+    '''
+    When method='query', return all the samples of a specific query each time.
+    When method='smaple', return one sample each time.
+    '''
+    result = []
+    if filepath.endswith('pointwise'):
+        mode = 1
+    elif filepath.endswith('pairwise'):
+        mode = 2
+    else:
+        raise ValueError('not supported')
+    if method not in {'query', 'sample'}:
+        raise ValueError('not supported')
+    with open(filepath, 'r') as fin:
+        for l in fin:
+            l = l.strip()
+            if mode == 1:
+                qid, docid, label, query, doc = l.split('\t')
+                label = func(label)
+                if parse:
+                    query = list(map(int, query.split()))
+                    doc = list(map(int, doc.split()))
+                sample = PointwiseSample(qid, docid, label, query, doc)
+            elif mode == 2:
+                qid, docid1, docid2, label, query, doc1, doc2 = l.split('\t')
+                label = func(label)
+                if parse:
+                    query = list(map(int, query.split()))
+                    doc1 = list(map(int, doc1.split()))
+                    doc2 = list(map(int, doc2.split()))
+                sample = PairwiseSample(qid, docid1, docid2, label, query, doc1, doc2)
+            if method == 'sample':
+                yield sample
+            elif method == 'query':
+                if len(result) > 0 and result[-1].qid != sample.qid:
+                    yield result
+                    result = []
+                result.append(sample)
+        if len(result) > 0:
+            yield result
 
 
 def load_train_test_file(filepath, file_format='ir', reverse=False):
