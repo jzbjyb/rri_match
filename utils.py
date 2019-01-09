@@ -100,6 +100,30 @@ def parse_sogou_qcl_one_qd(lines):
     return result
 
 
+def qd_xml_filter(filepath, out_filepath, filter_fn=lambda x: False):
+    '''
+    Iterate over <q></q> objects and filter.
+    '''
+    total = 0
+    remain = 0
+    with open(filepath, 'r') as fin, open(out_filepath, 'w') as fout:
+        lines = []
+        for l in fin:
+            if l.startswith('<q>'):
+                lines = [l]
+            elif l.startswith('</q>'):
+                lines.append(l)
+                qd = parse_sogou_qcl_one_qd(lines)
+                total += 1
+                if not filter_fn(qd[0]):
+                    remain += 1
+                    for line in lines:
+                        fout.write(line)
+            else:
+                lines.append(l)
+    print('{} out of {} are preserved'.format(remain, total))
+
+
 def qd_xml_iterator(filepath):
     '''
     Iterate over <q></q> objects and return one at a time.
@@ -121,6 +145,41 @@ def qd_xml_iterator(filepath):
                 yield qd[0]
             else:
                 lines.append(l)
+
+
+def qd_xml_to_prep(from_file, prep_file, vocab, field_in_xml='title', relevance='TACM'):
+    print('generate {}'.format(prep_file))
+    count_q, count_d = 0, 0
+    with open(prep_file, 'w') as prep_f:
+        for i, qd in enumerate(qd_xml_iterator(from_file)):
+            '''
+            qid = qd.find('./query_id').text
+            query = qd.find('./query').text
+            '''
+            qid = qd['query_id']
+            query = qd['query']
+            if len(query.strip()) == 0:
+                continue
+            count_q += 1
+            query = vocab.encode(query.split(' '))
+            query = ' '.join(map(str, query))
+            # for doc in qd.findall('./doc'):
+            for doc in qd['doc']:
+                '''
+                docid = doc.find('./doc_id').text
+                doc_text = doc.find('./{}'.format(field_in_xml)).text
+                label = doc.find('./relevance/{}'.format(relevance)).text
+                '''
+                docid = doc['doc_id']
+                doc_text = doc[field_in_xml]
+                label = doc['relevance'][0][relevance]
+                if len(doc_text.strip()) == 0:
+                    continue
+                count_d += 1
+                doc_text = vocab.encode(doc_text.split(' '))
+                doc_text = ' '.join(map(str, doc_text))
+                prep_f.write('{}\t{}\t{}\t{}\t{}\n'.format(qid, docid, label, query, doc_text))
+        print('totally {} queries, {} docs'.format(count_q, count_d))
 
 
 def word_segment(text):
@@ -499,6 +558,8 @@ class Vocab(object):
 
 
     def add(self, word):
+        if len(word) == 0:
+            return
         if word not in self.word2count:
             self.word2count[word] = 0
         self.word2count[word] += 1

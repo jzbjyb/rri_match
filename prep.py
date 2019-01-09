@@ -1,4 +1,4 @@
-import os, argparse, logging, jpype, random, gzip, shutil, zlib, multiprocessing, signal, time
+import os, argparse, logging, jpype, random, gzip, shutil, zlib, multiprocessing, signal, time, pickle
 from collections import defaultdict
 from itertools import groupby
 import numpy as np
@@ -8,7 +8,8 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from utils import Vocab, WordVector, load_from_html, load_from_query_file, load_train_test_file, \
   save_train_test_file, load_judge_file, load_run_file, load_query_log, save_judge_file, \
   save_query_file, load_prep_file, load_prep_file_aslist, save_prep_file, word_segment, qc_xml_field_line_map, \
-  load_boilerpipe, qd_xml_iterator, prep_file_iterator, prep_file_mapper, PointwiseSample
+  load_boilerpipe, qd_xml_iterator, prep_file_iterator, prep_file_mapper, PointwiseSample, qd_xml_to_prep, \
+  qd_xml_filter
 from config import CONFIG
 
 if __name__ == '__main__':
@@ -18,6 +19,7 @@ if __name__ == '__main__':
   parser.add_argument('-t', '--num_thread', help='number of threads', type=int, default=8)
   parser.add_argument('--line_count', help='number of lines of a file', type=int, default=None)
   parser.add_argument('-d', '--data_dir', help='data directory', type=str)
+  parser.add_argument('-o', '--out_dir', help='output directory', type=str)
   parser.add_argument('-l', '--query_log', help='the filepath of query log', type=str)
   parser.add_argument('-r', '--train_test_ratio', help='the ratio of train and test dataset',
             type=float, default=0.8)
@@ -272,9 +274,9 @@ def filter_query():
           os.path.join(data_dir, 'query'))
 
 
-def click_model_to_rel():
-  train_file = os.path.join(args.data_dir, 'train.prep.pointwise')
-  test_file = os.path.join(args.data_dir, 'test.prep.pointwise')
+def click_model_to_rel(do=['train', 'test'], files=['train.prep.pointwise', 'test.prep.pointwise']):
+  train_file = os.path.join(args.data_dir, files[0])
+  test_file = os.path.join(args.data_dir, files[1])
   train_click = load_judge_file(train_file, scale=float)
   clicks = []
   for q in train_click:
@@ -304,8 +306,10 @@ def click_model_to_rel():
   def map_fn(sample):
     nonlocal click2rel
     return PointwiseSample(sample.qid, sample.docid, click2rel(sample.label), sample.query, sample.doc)
-  prep_file_mapper(train_file, train_file + '.rel', method='sample', func=float, map_fn=map_fn)
-  prep_file_mapper(test_file, test_file + '.rel', method='sample', func=float, map_fn=map_fn)
+  if 'train' in do:
+    prep_file_mapper(train_file, train_file + '.rel', method='sample', func=float, map_fn=map_fn)
+  if 'test' in do:
+    prep_file_mapper(test_file, test_file + '.rel', method='sample', func=float, map_fn=map_fn)
 
 
 def click_to_rel():
@@ -499,7 +503,7 @@ def gen_pairwise():
       print('from {} samples to {} samples in {}'.format(all_pointwise, all_pairwise, fn_out))
 
 
-def gen_tfrecord_stream():
+def gen_tfrecord_stream(do=['train', 'test']):
   # number of tfrecord file to save
   num_shards = 1
   print('use {} shards'.format(num_shards))
@@ -507,7 +511,12 @@ def gen_tfrecord_stream():
     return random.randint(0, num_shards-1)
   train_filename = os.path.join(args.data_dir, 'train.prep.{}'.format(args.paradigm))
   test_filename = os.path.join(args.data_dir, 'test.prep.{}'.format(args.paradigm))
-  for fn in [train_filename, test_filename]:
+  files = []
+  if 'train' in do:
+    files.append(train_filename)
+  if 'test' in do:
+    files.append(test_filename)
+  for fn in files:
     print('convert "{}" ...'.format(fn))
     output_file = fn + '.tfrecord'
     writers = []
@@ -731,7 +740,15 @@ def xml_word_seg():
   pool.join()
 
 
-def xml_prep(field='body', relevance='TACM'):
+def xml_field_maping(field):
+  if field == 'body':
+    field_in_xml = 'content'
+  elif field == 'title':
+    field_in_xml = 'title'
+  return field_in_xml
+
+
+def xml_train_test_prep(field='body', relevance='TACM'):
   train_file = os.path.join(args.data_dir, 'qd.xml.seg.train')
   test_file = os.path.join(args.data_dir, 'qd.xml.seg.test')
   max_vocab_size = args.max_vocab_size
@@ -740,10 +757,7 @@ def xml_prep(field='body', relevance='TACM'):
   train_prep_file = os.path.join(args.data_dir, 'train.prep.pointwise')
   test_prep_file = os.path.join(args.data_dir, 'test.prep.pointwise')
   vocab_file = os.path.join(args.data_dir, 'vocab')
-  if field == 'body':
-    field_in_xml = 'content'
-  elif field == 'title':
-    field_in_xml = 'title'
+  field_in_xml = xml_field_maping(field)
   print('build vocab ...')
   vocab = Vocab(max_size=max_vocab_size)
   for i, qd in enumerate(qd_xml_iterator(train_file)):
@@ -765,38 +779,63 @@ def xml_prep(field='body', relevance='TACM'):
   vocab.save_to_file(vocab_file)
   for from_file, word_file, prep_file in \
     [(train_file, train_word_file, train_prep_file), (test_file, test_word_file, test_prep_file)]:
-    print('generate {}'.format(prep_file))
-    count_q, count_d = 0, 0
-    with open(prep_file, 'w') as prep_f:
-      for i, qd in enumerate(qd_xml_iterator(from_file)):
-        '''
-        qid = qd.find('./query_id').text
-        query = qd.find('./query').text
-        '''
-        qid = qd['query_id']
-        query = qd['query']
-        if len(query.strip()) == 0:
-          continue
-        count_q += 1
-        query = vocab.encode(query.split(' '))
-        query = ' '.join(map(str, query))
-        #for doc in qd.findall('./doc'):
-        for doc in qd['doc']:
-          '''
-          docid = doc.find('./doc_id').text
-          doc_text = doc.find('./{}'.format(field_in_xml)).text
-          label = doc.find('./relevance/{}'.format(relevance)).text
-          '''
-          docid = doc['doc_id']
-          doc_text = doc[field_in_xml]
-          label = doc['relevance'][0][relevance]
-          if len(doc_text.strip()) == 0:
-            continue
-          count_d += 1
-          doc_text = vocab.encode(doc_text.split(' '))
-          doc_text = ' '.join(map(str, doc_text))
-          prep_f.write('{}\t{}\t{}\t{}\t{}\n'.format(qid, docid, label, query, doc_text))
-      print('totally {} queries, {} docs'.format(count_q, count_d))
+    qd_xml_to_prep(from_file, prep_file, vocab, field_in_xml=field_in_xml, relevance=relevance)
+
+
+def xml_prep(from_file, prep_file, field='body', relevance='TACM'):
+  field_in_xml = xml_field_maping(field)
+  vocab = Vocab(filepath=os.path.join(args.data_dir, 'vocab'), file_format=args.format)
+  qd_xml_to_prep(from_file, prep_file, vocab, field_in_xml=field_in_xml, relevance=relevance)
+
+
+def prep_to_entityduet_format():
+  train_file = os.path.join(args.data_dir, 'train.prep.pairwise')
+  dev_file = os.path.join(args.data_dir, 'test.prep.pointwise')
+  test_file = os.path.join(args.data_dir, 'test.prep.pointwise')
+  vocab_file = os.path.join(args.data_dir, 'vocab')
+  emb_file = os.path.join(args.data_dir, 'w2v')
+  train_file_out = os.path.join(args.out_dir, 'train_pair.pkl')
+  dev_file_out = os.path.join(args.out_dir, 'dev.pkl')
+  test_file_out = os.path.join(args.out_dir, 'test.pkl')
+  vocab_file_out = os.path.join(args.out_dir, 'vocab.txt')
+  emb_file_out = os.path.join(args.out_dir, 'embed.txt')
+  def id_map_fn(ids):
+    return [id + 1 for id in ids]
+  def label_map_fn(label):
+    if label > 0:
+      return 1
+    return 0
+  # save train, dev, test data
+  for in_file, out_file in [(train_file, train_file_out), (dev_file, dev_file_out), (test_file, test_file_out)]:
+    transformed_data = []
+    print('transforming {} ...'.format(in_file))
+    if in_file.endswith('pointwise'):
+      mode = 1
+      func = int
+    elif in_file.endswith('pairwise'):
+      mode = 2
+      func = float
+    for sample in prep_file_iterator(in_file, method='sample', func=func, parse=True):
+      if mode == 1:
+        transformed_data.append(
+          (id_map_fn(sample.query), id_map_fn(sample.doc), label_map_fn(sample.label), sample.qid))
+      elif mode == 2:
+        transformed_data.append(
+          (id_map_fn(sample.query), id_map_fn(sample.doc1), id_map_fn(sample.doc2)))
+    print('saving to {}'.format(out_file))
+    with open(out_file, 'wb') as fout:
+      pickle.dump(transformed_data, fout, protocol=2)
+  # save vocab
+  print('saving to {}'.format(vocab_file_out))
+  vocab = Vocab(filepath=vocab_file, file_format=args.format)
+  words = ['<PAD>'] + vocab.get_word_list()
+  with open(vocab_file_out, 'w') as fout:
+    fout.write('\n'.join(words) + '\n')
+  # save emb
+  print('saving to {}'.format(emb_file_out))
+  wv = WordVector(filepath=emb_file, first_line=args.first_line)
+  vector = np.concatenate([np.zeros_like(wv.vectors[:1]), wv.vectors], axis=0)
+  vector.dump(emb_file_out)
 
 
 if __name__ == '__main__':
@@ -826,8 +865,9 @@ if __name__ == '__main__':
   elif args.action == 'click_model_to_rel':
     '''
     usage: python prep.py -a click_model_to_rel -d data_dir
+    remember to modify do and files.
     '''
-    click_model_to_rel()
+    click_model_to_rel(do=['train', 'test'], files=['train.prep.pointwise', 'test.prep.pointwise'])
   elif args.action == 'filter_judgement':
     filter_judgement()
   elif args.action == 'find_gzip':
@@ -848,10 +888,10 @@ if __name__ == '__main__':
   elif args.action == 'gen_tfrecord':
     '''
     usage: python prep.py -a gen_tfrecord -d data_dir -f text -p pointwise [--use_stream]
-    remember to modify the bow and segmentation parameter.
+    remember to modify the do, bow, and segmentation parameter.
     '''
     if args.use_stream:
-      gen_tfrecord_stream()
+      gen_tfrecord_stream(do=['train', 'test'])
     else:
       gen_tfrecord(bow=False, segmentation=True)
   elif args.action == 'drop_negative':
@@ -866,12 +906,32 @@ if __name__ == '__main__':
     remember that the line_count given by `wc -l` might be different that give by python.
     '''
     xml_word_seg()
-  elif args.action == 'xml_prep':
+  elif args.action == 'xml_train_test_prep':
     '''
-    usage: python prep.py -a xml_prep -d data_dir --max_vocab_size 100000
+    usage: python prep.py -a xml_train_test_prep -d data_dir --max_vocab_size 100000
     remember to modify the field and relevance.
     '''
-    xml_prep(field='title', relevance='TACM')
+    xml_train_test_prep(field='title', relevance='TACM')
+  elif args.action == 'xml_prep':
+    '''
+    usage: python prep.py -a xml_prep -d data_dir --format ir
+    remember to modify the filepath, field, and relevance.
+    '''
+    xml_prep(from_file='data/sogou_qcl_08/qd.xml.seg.test.filter',
+      prep_file='data/sogou_qcl_08/test.prep.pointwise.filter', field='title', relevance='TACM')
+  elif args.action == 'prep_to_entityduet_format':
+    '''
+    usage: python prep.py -a prep_to_entityduet_format -d data_dir -o out_dir --format ir [--first_line]
+    '''
+    prep_to_entityduet_format()
+  elif args.action == 'xml_filter':
+    filepath = 'data/sogou_qcl_08/qd.xml.seg.test'
+    out_filepath = filepath + '.filter'
+    def filter_fn(qd):
+      if int(qd['query_frequency']) < 100:
+        return True
+      return False
+    qd_xml_filter(filepath, out_filepath, filter_fn=filter_fn)
   elif args.action == 'recover':
     cache_line = []
     with open('data/sogou_qcl_08/qd.xml.seg', 'r') as fin, \
