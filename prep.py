@@ -838,6 +838,24 @@ def prep_to_entityduet_format():
   vector.dump(emb_file_out)
 
 
+def chkpt_rename(checkpoint_dir, new_checkpoint_dir, dry_run=True, map_name=dict()):
+  with tf.Session() as sess:
+    for var_name, _ in tf.contrib.framework.list_variables(checkpoint_dir):
+      # Load the variable
+      var = tf.contrib.framework.load_variable(checkpoint_dir, var_name)
+      # Set the new name
+      new_name = var_name
+      if var_name in map_name:
+        new_name = map_name[var_name]
+        print('%s would be renamed to %s.' % (var_name, new_name))
+      var = tf.Variable(var, name=new_name)
+    if not dry_run:
+      # Save the variables
+      saver = tf.train.Saver()
+      sess.run(tf.global_variables_initializer())
+      saver.save(sess, new_checkpoint_dir)
+
+
 if __name__ == '__main__':
   if args.action == 'prep':
     '''
@@ -911,7 +929,7 @@ if __name__ == '__main__':
     usage: python prep.py -a xml_train_test_prep -d data_dir --max_vocab_size 100000
     remember to modify the field and relevance.
     '''
-    xml_train_test_prep(field='title', relevance='TACM')
+    xml_train_test_prep(field='body', relevance='TACM')
   elif args.action == 'xml_prep':
     '''
     usage: python prep.py -a xml_prep -d data_dir --format ir
@@ -924,6 +942,12 @@ if __name__ == '__main__':
     usage: python prep.py -a prep_to_entityduet_format -d data_dir -o out_dir --format ir [--first_line]
     '''
     prep_to_entityduet_format()
+  elif args.action == 'chkpt_rename':
+    '''
+    usage: python prep.py -a chkpt_rename
+    remember to modify the dir and map_name dict.
+    '''
+    chkpt_rename(checkpoint_dir='', new_checkpoint_dir='', dry_run=False, map_name=dict())
   elif args.action == 'xml_filter':
     filepath = 'data/sogou_qcl_08/qd.xml.seg.test'
     out_filepath = filepath + '.filter'
